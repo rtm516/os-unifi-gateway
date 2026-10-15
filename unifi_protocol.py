@@ -171,7 +171,9 @@ def _uptime_stats(dc, uptime):
     """WAN health as a UniFi OS gateway reports it. The controller takes a
     UXG's WAN latency and availability only from here (the first of
     `alerting_monitors`), not from if_table, and shows the ISP as offline
-    without them."""
+    without them. `uptime` is the WAN's current online streak; `downtime`
+    is total offline seconds, which the controller records the growth of
+    per interval as WAN downtime."""
     monitor = dc.data.get('wan_monitor')
     if not monitor:
         return None
@@ -179,11 +181,17 @@ def _uptime_stats(dc, uptime):
     latency = int(round(monitor['latency']))
     check = {'availability': availability, 'latency_average': latency,
              'target': monitor['target'], 'type': 'icmp'}
+    if monitor['down']:
+        wan_uptime = 0
+    elif monitor.get('up_since'):
+        wan_uptime = max(0, int(time.time() - monitor['up_since']))
+    else:
+        wan_uptime = uptime
     return {'WAN': {
         'availability': availability,
         'latency_average': latency,
-        'uptime': uptime,
-        'downtime': 0,
+        'uptime': wan_uptime,
+        'downtime': monitor.get('downtime', 0),
         'monitors': [check],
         'alerting_monitors': [check],
     }}
@@ -246,6 +254,8 @@ def _uxg_fields(dc, ports, uptime=0):
     if dc.data.get('isp'):
         # the controller shows the ISP from here, per WAN group
         fields['geo_info'] = {'WAN': dict(dc.data['isp'])}
+    if dc.data.get('sys_stats'):
+        fields['sys_stats'] = dict(dc.data['sys_stats'])
     return fields
 
 

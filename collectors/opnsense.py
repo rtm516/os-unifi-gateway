@@ -188,6 +188,7 @@ class OPNsenseCollector:
         self._links = {}
         self._names = {}
         self._rdns = {}
+        self._wan_health = None
         self._started = time.time()
 
         self.wan_interface = config.get('opnsense', 'wan_interface', fallback='WAN')
@@ -296,7 +297,12 @@ class OPNsenseCollector:
         now = time.time()
         macs, ips, ifstat = {}, {}, {}
         for ifname, row in ((self.wan_port, wan), (self.lan_port, lan)):
+            ports = physical_ports(rows, row, ppps)
             macs[ifname] = (row.get('macaddr') or ZERO_MAC).lower()
+            if macs[ifname] == ZERO_MAC:
+                # a PPP link has no MAC of its own: show the NIC it dials over
+                macs[ifname] = next((p['macaddr'].lower() for p in ports
+                                     if (p.get('macaddr') or ZERO_MAC) != ZERO_MAC), ZERO_MAC)
 
             address = self._ipv4(row)
             if address:
@@ -307,7 +313,7 @@ class OPNsenseCollector:
                 ips[ifname] = address
 
             ifstat[ifname] = self._ifstat(ifname, row, now)
-            ifstat[ifname].update(self._link(ifname, row, physical_ports(rows, row, ppps)))
+            ifstat[ifname].update(self._link(ifname, row, ports))
 
             if ifname == self.wan_port:
                 self._wan_dns = self._nameservers(row)
@@ -458,6 +464,17 @@ class OPNsenseCollector:
             stats['cpu'] = str(int(100 - float(sample['idle'])))
         self.data['system_stats'] = stats
 
+        sys_stats = {}
+        loadavg = str((sys_time or {}).get('loadavg') or '').replace(',', ' ').split()
+        if len(loadavg) == 3:
+            sys_stats.update(zip(('loadavg_1', 'loadavg_5', 'loadavg_15'), loadavg))
+        try:
+            sys_stats.update(mem_total=int(float(memory['total'])),
+                             mem_used=int(float(memory['used'])), mem_buffer=0)
+        except (KeyError, TypeError, ValueError):
+            pass
+        self.data['sys_stats'] = sys_stats or self.data.get('sys_stats', {})
+
     def uptime(self):
         """Router uptime, advanced locally between refreshes. Without it (no
         "Lobby: Dashboard" privilege), the time since we started reporting:
@@ -480,18 +497,43 @@ class OPNsenseCollector:
 
         self.data.setdefault('latency', 0)
         for item in sorted(items, key=lambda i: not matches(i)):
+            down = item.get('status') == 'down'
             delay = _leading_number(item.get('delay'))
             if delay is None:
-                continue
+                if not (down and matches(item)):
+                    continue
+                delay = 0.0  # a dead link may have no measurement at all
             target = item.get('monitor', '')
             self.data['latency'] = delay
-            self.data['wan_monitor'] = {
-                'latency': delay,
-                'loss': _leading_number(item.get('loss')) or 0.0,
-                'target': target if re.match(r'^[\d.:a-fA-F]+$', target) else item.get('address', ''),
-                'down': item.get('status') == 'down',
-            }
+            self.data['wan_monitor'] = dict(
+                self._track_wan(down),
+                latency=delay,
+                loss=100.0 if down and delay == 0.0 else _leading_number(item.get('loss')) or 0.0,
+                target=target if re.match(r'^[\d.:a-fA-F]+$', target) else item.get('address', ''),
+                down=down,
+            )
             return
+
+    def _track_wan(self, down):
+        """The WAN's current online streak (`up_since`, None while down) and
+        total offline seconds (`downtime`). The controller charts how much
+        `downtime` grew in each interval, so it only ever counts up."""
+        now = time.time()
+        health = self._wan_health
+        if health is None:
+            # as far as we know, up since the router started
+            health = self._wan_health = {
+                'checked': now, 'down': down, 'downtime': 0.0,
+                'up_since': None if down else now - self.uptime(),
+            }
+        if health['down']:
+            health['downtime'] += now - health['checked']
+        if down:
+            health['up_since'] = None
+        elif health['up_since'] is None:
+            health['up_since'] = now
+        health.update(checked=now, down=down)
+        return {'up_since': health['up_since'], 'downtime': int(health['downtime'])}
 
     # ── DHCP leases ──────────────────────────────────────────────────────
 
@@ -603,7 +645,9 @@ class OPNsenseCollector:
             hosts[mac] = entry
 
         for row in rows:
-            if row.get('intf') != self.lan_device or row.get('expired') or not row.get('mac'):
+            # the router's own address is a permanent entry, not a client
+            if row.get('intf') != self.lan_device or row.get('expired') or not row.get('mac') \
+                    or row['mac'].lower() in self.data.get('macs', {}).values():
                 continue
             mac = row['mac'].lower()
             add(mac, row.get('ip', ''), uptime)

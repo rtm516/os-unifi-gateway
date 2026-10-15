@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Inform payloads built from OPNsense data."""
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -64,6 +65,17 @@ def test_uxg_fields(gateway_config, collector, device):
     roles = {p['ifname']: p['role'] for p in payload['ethernet_overrides']}
     assert roles == {'eth0': 'wan', 'eth1': 'lan'}
     assert [p['port_idx'] for p in payload['port_table']] == [1, 2]
+
+
+def test_sys_stats(gateway_config, collector, device):
+    """The gateway panel's load average."""
+    from unifi_protocol import create_inform
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    assert payload['sys_stats']['loadavg_1'] == '0.1'
+    assert payload['sys_stats']['mem_total'] == 8000
+
+    collector.data.pop('sys_stats')  # privilege missing
+    assert 'sys_stats' not in json.loads(create_inform(gateway_config, collector, device))
 
 
 def test_uxg_clients_in_lan_port_mac_table(gateway_config, collector, device):
@@ -171,16 +183,20 @@ def test_uptime_stats(gateway_config, collector, device):
     payload = json.loads(create_inform(gateway_config, collector, device))
     wan = payload['uptime_stats']['WAN']
     assert (wan['availability'], wan['latency_average'], wan['downtime']) == (100.0, 8, 0)
-    assert wan['uptime'] == payload['uptime']
+    assert abs(wan['uptime'] - payload['uptime']) <= 1  # up since the router started
     check = {'availability': 100.0, 'latency_average': 8, 'target': '81.2.3.1', 'type': 'icmp'}
     assert wan['monitors'] == wan['alerting_monitors'] == [check]
 
     collector.data['wan_monitor'].update(loss=12.5)
     wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
     assert wan['alerting_monitors'][0]['availability'] == 87.5
-    collector.data['wan_monitor'].update(down=True)
+    collector.data['wan_monitor'].update(down=True, up_since=None, downtime=300)
     wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
-    assert wan['availability'] == 0.0
+    assert (wan['availability'], wan['uptime'], wan['downtime']) == (0.0, 0, 300)
+    # back up: the streak restarts, the offline total stays
+    collector.data['wan_monitor'].update(down=False, up_since=time.time() - 60)
+    wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
+    assert 59 <= wan['uptime'] <= 61 and wan['downtime'] == 300
 
     del collector.data['wan_monitor']  # gateway status not readable
     assert 'uptime_stats' not in json.loads(create_inform(gateway_config, collector, device))

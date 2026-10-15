@@ -53,11 +53,11 @@ Earlier versions appeared as a UniFi Gateway Lite, on which the controller won't
 |---|---|
 | WAN/LAN addresses, MACs, link state, MTU, speed | interface status |
 | Traffic counters and rates | interface statistics |
-| WAN gateway and latency | routing table and gateway monitoring (dpinger) |
+| WAN gateway, latency, uptime and downtime | routing table and gateway monitoring (dpinger) |
 | ISP name and logo | the WAN address's provider, looked up at [ipinfo.io](https://ipinfo.io) |
 | WAN DNS servers | Unbound's upstream servers, otherwise the WAN link's DNS servers |
 | Clients, hostnames, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
-| Hostname, uptime, CPU, memory | system information |
+| Hostname, uptime, CPU, memory, load average | system information |
 | WAN speed test | measured by the daemon against the nearest fast [speedtest.net](https://www.speedtest.net) server, as UniFi gateways do |
 
 Per-client traffic needs **Reporting > NetFlow** capturing the LAN interface.
@@ -73,12 +73,12 @@ For development and testing, the gateway can also run in Docker, reading from th
    | Privilege | Needed for |
    |---|---|
    | Status: Interfaces | **required**: interfaces, addresses, counters |
-   | Lobby: Dashboard | hostname, version, uptime, CPU, memory |
+   | Lobby: Dashboard | hostname, version, uptime, CPU, memory, load average |
    | Diagnostics: ARP Table | client list |
    | Diagnostics: Network Insight | per-client traffic |
    | Services: Dnsmasq DNS/DHCP: Settings *or* Services: DHCP: Kea(v4) | client hostnames from DHCP leases |
    | Services: Unbound | upstream DNS servers |
-   | System: Gateways | WAN latency |
+   | System: Gateways | WAN latency, uptime and downtime |
 
    Some of these privileges also allow changes on that page. Only **Status: Interfaces** is required; the log names any missing privilege.
 

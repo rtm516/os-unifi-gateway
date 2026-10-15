@@ -79,8 +79,9 @@ ACTIONS = {
     'kea list leases4': {'records': [
         {'address': '192.168.48.2', 'hwaddr': '00:00:5e:00:53:02', 'hostname': 'pi'},
     ]},
-    'system sysctl values kern.boottime': {
-        'kern.boottime': '{ sec = 1000000, usec = 0 } Mon Jan 12 13:46:40 1970'},
+    'system sysctl values kern.boottime,vm.loadavg': {
+        'kern.boottime': '{ sec = 1000000, usec = 0 } Mon Jan 12 13:46:40 1970',
+        'vm.loadavg': '{ 0.10 0.20 0.30 }'},
     'system sysctl values hw.physmem,vm.stats.vm.v_page_count,vm.stats.vm.v_inactive_count,'
     'vm.stats.vm.v_cache_count,vm.stats.vm.v_laundry_count,vm.stats.vm.v_free_count': {
         'hw.physmem': '8000', 'vm.stats.vm.v_page_count': '100',
@@ -188,7 +189,8 @@ def test_system(local):
     assert local.system_information() == {'name': 'router.example.net',
                                           'versions': ['OPNsense 25.7.5']}
     with patch('collectors.local_source.time.time', return_value=1000000 + 90061):
-        assert local.system_time() == {'uptime': '1 day, 01:01:01'}
+        assert local.system_time() == {'uptime': '1 day, 01:01:01',
+                                       'loadavg': '0.10, 0.20, 0.30'}
     assert local.system_resources() == {'memory': {'total': 8000.0, 'used': 2000}}
 
 

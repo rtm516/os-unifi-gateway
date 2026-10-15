@@ -189,11 +189,17 @@ class LocalSource(Source):
         }
 
     def system_time(self):
-        boottime = self._sysctl('kern.boottime').get('kern.boottime', '')
+        values = self._sysctl('kern.boottime', 'vm.loadavg')
+        boottime = values.get('kern.boottime', '')
         match = re.search(r'sec = (\d+)', boottime)
         if not match:
             raise SourceError('kern.boottime', None, 'unexpected value %r' % boottime)
-        return {'uptime': format_uptime(time.time() - int(match.group(1)))}
+        result = {'uptime': format_uptime(time.time() - int(match.group(1)))}
+        # "{ 0.10 0.20 0.30 }", as the API reformats it
+        loadavg = str(values.get('vm.loadavg', '')).strip('{} ').split()
+        if len(loadavg) == 3:
+            result['loadavg'] = ', '.join(loadavg)
+        return result
 
     def system_resources(self):
         mem = self._sysctl(

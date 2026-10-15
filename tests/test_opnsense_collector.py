@@ -129,7 +129,15 @@ class TestInterfaces:
         assert dc.data['nameservers'] == ['81.2.3.53', '81.2.3.54']
         assert '/api/unbound/diagnostics/dumpinfra' not in fake_api.calls
 
-    def test_pppoe_without_mac_gets_placeholder(self, gateway_config, fake_api):
+    def test_pppoe_shows_the_mac_of_its_nic(self, gateway_config, fake_api):
+        dc = make(gateway_config, fake_api)
+        assert dc.data['macs']['eth0'] == '00:00:5e:00:53:10'  # igb0, which it dials over
+
+    def test_mac_placeholder_without_a_nic(self, gateway_config, fake_api):
+        rows = fake_api.responses['/api/interfaces/overview/interfaces_info/1']['rows']
+        for row in rows:
+            if row['device'] == 'igb0':
+                del row['macaddr']
         dc = make(gateway_config, fake_api)
         assert dc.data['macs']['eth0'] == '00:00:00:00:00:00'
 
@@ -328,11 +336,41 @@ class TestSystem:
         dc = make(gateway_config, FakeAPI(cpu={'idle': 70}))
         assert dc.data['system_stats']['cpu'] == '30'
 
+    def test_sys_stats(self, gateway_config, fake_api):
+        dc = make(gateway_config, fake_api)
+        assert dc.data['sys_stats'] == {
+            'loadavg_1': '0.1', 'loadavg_5': '0.2', 'loadavg_15': '0.3',
+            'mem_total': 8000, 'mem_used': 2000, 'mem_buffer': 0}
+
     def test_latency_from_wan_gateway(self, gateway_config, fake_api):
         dc = make(gateway_config, fake_api)
         assert dc.data['latency'] == 8.4
-        assert dc.data['wan_monitor'] == {
-            'latency': 8.4, 'loss': 0.0, 'target': '81.2.3.1', 'down': False}
+        monitor = dict(dc.data['wan_monitor'])
+        # up since the router started, as far as we know
+        assert abs(monitor.pop('up_since') - (time.time() - dc.uptime())) < 2
+        assert monitor == {'latency': 8.4, 'loss': 0.0, 'target': '81.2.3.1',
+                           'down': False, 'downtime': 0}
+
+    def test_wan_downtime_counts_up(self, gateway_config, fake_api):
+        items = fake_api.responses['/api/routes/gateway/status']['items']
+        with patch('collectors.opnsense.time.time', return_value=10000.0):
+            dc = make(gateway_config, fake_api)
+
+        def check(at, status, delay='8.4 ms'):
+            items[0].update(status=status, delay=delay)
+            dc.updated['latency'] = 0
+            with patch('collectors.opnsense.time.time', return_value=at):
+                dc.update()
+            return dc.data['wan_monitor']
+
+        # a dead link may have no delay at all
+        down = check(10060.0, 'down', '~')
+        assert (down['down'], down['up_since'], down['latency'], down['loss'],
+                down['downtime']) == (True, None, 0.0, 100.0, 0)
+        assert check(10180.0, 'down')['downtime'] == 120
+        back = check(10240.0, 'none')
+        assert (back['down'], back['downtime'], back['up_since']) == (False, 180, 10240.0)
+        assert check(10300.0, 'none')['downtime'] == 180
 
     def test_wan_monitor_target_and_loss(self, gateway_config):
         api = FakeAPI()
@@ -344,7 +382,8 @@ class TestSystem:
         dc = make(gateway_config, api)
         assert dc.data['latency'] == 12.5
         assert dc.data['wan_monitor'] == {
-            'latency': 12.5, 'loss': 35.0, 'target': '1.1.1.1', 'down': True}
+            'latency': 12.5, 'loss': 35.0, 'target': '1.1.1.1', 'down': True,
+            'up_since': None, 'downtime': 0}
 
     def test_optional_endpoints_degrade(self, gateway_config):
         api = FakeAPI(forbidden={
@@ -413,6 +452,15 @@ class TestClients:
         assert hosts['00:00:5e:00:53:02']['hostname'] == 'pi'
         assert hosts['00:00:5e:00:53:03']['hostname'] == 'phone.lan'
         assert 'hostname' not in hosts['aa:aa:aa:aa:aa:09']
+
+    def test_host_table_skips_router_itself(self, gateway_config, fake_api):
+        # the LAN address's own permanent ARP entry made the controller
+        # register the gateway as its own uplink
+        fake_api.responses['/api/diagnostics/interface/search_arp']['rows'].append(
+            {'mac': '00:00:5e:00:53:01', 'ip': '192.168.48.254', 'intf': 'bridge0',
+             'expired': False, 'permanent': True, 'hostname': '', 'intf_description': 'LAN'})
+        dc = make(gateway_config, fake_api)
+        assert '00:00:5e:00:53:01' not in {h['mac'] for h in dc.data['host_table']}
 
     @staticmethod
     def names(dc):

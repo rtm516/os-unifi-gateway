@@ -54,7 +54,7 @@ class Source:
         raise NotImplementedError
 
     def system_time(self):
-        """{'uptime': '2 days, 03:04:05'}"""
+        """{'uptime': '2 days, 03:04:05', 'loadavg': '0.10, 0.20, 0.30'}"""
         raise NotImplementedError
 
     def system_resources(self):
