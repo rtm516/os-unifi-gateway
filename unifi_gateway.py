@@ -391,12 +391,17 @@ class UnifiGateway:
             self.live = live
 
         elif resp_type == 'setparam':
+            # cfgversion is reported back in every inform; interval is
+            # the inform interval, as in noop
             HANDLED_SETPARAM_KEYS = {
                 '_type', 'server_time_in_utc', 'blocked_sta', 'mgmt_cfg',
+                'cfgversion', 'interval',
             }
             for key, value in response.items():
                 if key == 'mgmt_cfg':
                     self._parse_mgmt_cfg(value)
+                elif key == 'interval':
+                    self.interval = value
                 if key not in NOT_PERSISTED_SETPARAM_KEYS:
                     self.config.set('provisioned', key, str(value))
                 if key not in HANDLED_SETPARAM_KEYS:

@@ -9,9 +9,11 @@ idle, 1 running or 2 done. The first report with `status_summary` other than
 Mbps, `latency` in ms, keyed by `rundate` (epoch seconds). So the controller
 must see the test running at least once, or it keeps the previous result.
 
-Measurements use Ookla's speedtest.net servers, as UniFi gateways do, over
-the HTTPS interface their web client uses: the lowest-latency server of the
-nearest few, then several parallel download and upload streams.
+Measurements use Ookla's speedtest.net servers (UniFi OS's own test uses
+Ubiquiti's, listed at sp-dir.uwn.com), over the HTTPS interface their web
+client uses: the lowest-latency server of the nearest few, then several
+parallel download and upload streams. The controller marks a test still
+running 90 s after `rundate` as failed (status 3).
 """
 import http.client
 import json
@@ -161,14 +163,15 @@ class OoklaBackend:
 
     @staticmethod
     def _server_info(server):
-        """The UI shows "<provider> to <country>" while testing (only
-        "Connecting..." without both), so `country` holds the location."""
+        """The server as UniFi OS's own speed test reports it. The UI shows
+        "<provider> to <country>" while testing (only "Connecting..."
+        without both)."""
         info = {
             'provider': server.get('sponsor') or 'speedtest.net',
             'provider_url': 'https://www.speedtest.net/',
             'city': server.get('name', ''),
-            'country': server.get('name') or server.get('country', ''),
-            'cc': server.get('cc', ''),
+            'country': server.get('country') or server.get('name', ''),
+            'countryCode': server.get('cc', ''),
             'id': str(server.get('id', '')),
         }
         for key in ('lat', 'lon'):

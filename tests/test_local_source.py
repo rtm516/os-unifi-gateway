@@ -241,6 +241,26 @@ def test_kea_reservations_from_config(local, tmp_path):
     assert local.dhcp_reservations('dnsmasq') == []
 
 
+def test_dhcp_subnets_from_config(local, tmp_path):
+    kea = ('<Kea><dhcp4><subnets><subnet4 uuid="s1"><subnet>192.168.48.0/23</subnet>'
+           '<pools>192.168.49.10-192.168.49.200</pools></subnet4></subnets></dhcp4></Kea>')
+    servers = ('<dnsmasq><dhcp_ranges uuid="d1"><interface>lan</interface>'
+               '<start_addr>192.168.48.10</start_addr><end_addr>192.168.48.99</end_addr></dhcp_ranges>'
+               '</dnsmasq><dhcpd><lan><enable>1</enable><range><from>192.168.48.100</from>'
+               '<to>192.168.48.150</to></range></lan><opt1><range><from>10.0.0.2</from>'
+               '<to>10.0.0.9</to></range></opt1><opt2><enable/><range><from>10.1.0.2</from>'
+               '<to>10.1.0.9</to></range></opt2></dhcpd>')
+    xml = CONFIG_XML.replace('</OPNsense>', kea + '</OPNsense>' + servers)
+    (tmp_path / 'config.xml').write_text(xml)
+    local._xml = (None, None)
+    assert local.dhcp_subnets('kea') == [
+        {'subnet': '192.168.48.0/23', 'pools': '192.168.49.10-192.168.49.200'}]
+    assert local.dhcp_subnets('dnsmasq') == [{'subnet': '', 'pools': '192.168.48.10-192.168.48.99'}]
+    # ISC ranges of enabled interfaces only (an empty <enable/> counts)
+    assert local.dhcp_subnets('isc') == [{'subnet': '', 'pools': '192.168.48.100-192.168.48.150'},
+                                         {'subnet': '', 'pools': '10.1.0.2-10.1.0.9'}]
+
+
 def test_flow_totals_passes_filter(local):
     assert local.flow_totals(2700, 3000, 'bridge0', 'in') == [{'src_addr': '192.168.48.2', 'total': 512}]
     assert local.runner.calls[-1][1:] == [

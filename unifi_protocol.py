@@ -176,9 +176,11 @@ def _uptime_stats(dc, uptime):
     """WAN health as a UniFi OS gateway reports it. The controller takes a
     UXG's WAN latency and availability only from here (the first of
     `alerting_monitors`), not from if_table, and shows the ISP as offline
-    without them. `uptime` is the WAN's current online streak; `downtime`
-    is total offline seconds, which the controller records the growth of
-    per interval as WAN downtime."""
+    without them. `uptime` is the WAN's current online streak, left out
+    while it is down; `downtime` is how long the current outage has lasted,
+    0 while up. The controller records outages from `downtime`, says the
+    WAN failed once it passes 6 s, and that it is back when `uptime`
+    returns."""
     monitor = dc.data.get('wan_monitor')
     if not monitor:
         return None
@@ -186,20 +188,19 @@ def _uptime_stats(dc, uptime):
     latency = int(round(monitor['latency']))
     check = {'availability': availability, 'latency_average': latency,
              'target': monitor['target'], 'type': 'icmp'}
-    if monitor['down']:
-        wan_uptime = 0
-    elif monitor.get('up_since'):
-        wan_uptime = max(0, int(time.time() - monitor['up_since']))
-    else:
-        wan_uptime = uptime
-    return {'WAN': {
+    wan = {
         'availability': availability,
         'latency_average': latency,
-        'uptime': wan_uptime,
         'downtime': monitor.get('downtime', 0),
         'monitors': [check],
         'alerting_monitors': [check],
-    }}
+    }
+    if not monitor['down']:
+        if monitor.get('up_since'):
+            wan['uptime'] = max(0, int(time.time() - monitor['up_since']))
+        else:
+            wan['uptime'] = uptime
+    return {'WAN': wan}
 
 
 def _uxg_fields(dc, ports, uptime=0):
@@ -292,6 +293,10 @@ def _complete_payload(config, dc, device):
     payload = {
         'bootrom_version': 'unknown',
         'cfgversion': config.get('provisioned', 'cfgversion') if config.has_option('provisioned', 'cfgversion') else '',
+        # Right after adoption the controller makes its networks match these
+        # when they differ from a factory-default gateway. The WAN stays
+        # "dhcp": anything else makes it rebuild its WAN network from this,
+        # e.g. as PPPoE without the password, which the API can't read.
         'config_network_wan': {'type': 'dhcp'},
         'config_port_table': ports,
         'connect_request_ip': ip_addr,
@@ -304,11 +309,11 @@ def _complete_payload(config, dc, device):
         # 1 would claim WireGuard tools
         'fw2_caps': 2,
         'guest_token': '4C1D46707239C6EB5A2366F505A44A91',
+        # The controller folds has_* flags into usg_caps. UniFi OS firmware
+        # sends these two but not the USG's has_dpi, has_porta and
+        # radius_caps, which would claim DPI, portal and RADIUS support.
         'has_default_route_distance': True,
-        'has_dnsmasq_hostfile_update': True,
-        'has_dpi': False,
         'has_eth1': True,
-        'has_porta': True,
         'has_ssh_disable': True,
         'hostname': hostname,
         'inform_url': config.get('gateway', 'url'),
@@ -321,7 +326,6 @@ def _complete_payload(config, dc, device):
         'model': device.model,
         'model_display': device.display,
         'netmask': netmask,
-        'radius_caps': 1,
         'required_version': '4.0.0',
         'selfrun_beacon': True,
         'serial': mac.replace(':', '').upper(),
@@ -340,6 +344,8 @@ def _complete_payload(config, dc, device):
         'network_table': get_network_table(dc.data, ports),
         'if_table': get_if_table(dc.data, ports, uptime),
     }
+    if dc.data.get('config_network_lan'):
+        payload['config_network_lan'] = dict(dc.data['config_network_lan'])
     payload.update(_uxg_fields(dc, ports, uptime))
     speedtest = dc.data.get('speedtest') or {}
     if speedtest.get('rundate'):

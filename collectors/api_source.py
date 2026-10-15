@@ -102,6 +102,18 @@ class APISource(Source):
         return _rows(self._get('/api/kea/dhcpv4/search_reservation',
                                LEASE_ENDPOINTS['kea'][1], LIST_ALL))
 
+    def dhcp_subnets(self, server):
+        if server == 'kea':
+            return _rows(self._get('/api/kea/dhcpv4/search_subnet',
+                                   LEASE_ENDPOINTS['kea'][1], LIST_ALL))
+        if server == 'dnsmasq':
+            rows = _rows(self._get('/api/dnsmasq/settings/search_range',
+                                   LEASE_ENDPOINTS['dnsmasq'][1], LIST_ALL))
+            return [{'subnet': '', 'pools': '%s-%s' % (row['start_addr'], row['end_addr'])}
+                    for row in rows if row.get('start_addr') and row.get('end_addr')]
+        # ISC's ranges have no API endpoint
+        return []
+
     def reverse_dns(self, addresses):
         names = {}
         addresses = list(addresses)

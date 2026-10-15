@@ -101,6 +101,19 @@ class TestSetparam:
         assert logged['setparam/system_cfg']['payload']['value'] == {
             '_truncated': len(system_cfg), 'keys': ['udapi', 'unifi']}
 
+    def test_cfgversion_and_interval_are_handled(self, tmp_path, gateway_module):
+        import json
+        conf = tmp_path / 'unifi-gateway.conf'
+        conf.write_text('[gateway]\nis_adopted = True\n')
+        gw = _gateway(gateway_module, conf)
+        unhandled = tmp_path / 'unhandled.json'
+        with patch.object(gateway_module, 'CONFIG_FILE', str(conf)), \
+             patch.object(gateway_module, 'UNHANDLED_LOG', str(unhandled)):
+            gw._handle_response({'_type': 'setparam', 'cfgversion': 'abc', 'interval': 30})
+        assert gw.interval == 30
+        assert _read(conf).get('provisioned', 'cfgversion') == 'abc'
+        assert not unhandled.exists() or json.loads(unhandled.read_text()) == {}
+
     def test_summarise_keeps_short_values(self, gateway_module):
         assert gateway_module._summarise('short') == 'short'
         assert gateway_module._summarise('{not json' + 'x' * 600)['keys'] == []

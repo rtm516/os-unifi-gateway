@@ -247,6 +247,19 @@ class LocalSource(Source):
         return [{'hw_address': node.findtext('hw_address', ''), 'hostname': node.findtext('hostname', '')}
                 for node in self._config().findall('OPNsense/Kea/dhcp4/reservations/reservation')]
 
+    def dhcp_subnets(self, server):
+        root = self._config()
+        if server == 'kea':
+            return [{'subnet': node.findtext('subnet', ''), 'pools': node.findtext('pools', '')}
+                    for node in root.findall('OPNsense/Kea/dhcp4/subnets/subnet4')]
+        if server == 'dnsmasq':
+            ranges = [(node.findtext('start_addr', ''), node.findtext('end_addr', ''))
+                      for node in root.findall('dnsmasq/dhcp_ranges')]
+        else:
+            ranges = [(node.findtext('range/from', ''), node.findtext('range/to', ''))
+                      for node in root.findall('dhcpd/*') if node.find('enable') is not None]
+        return [{'subnet': '', 'pools': '%s-%s' % r} for r in ranges if all(r)]
+
     def reverse_dns(self, addresses):
         def lookup(address):
             try:

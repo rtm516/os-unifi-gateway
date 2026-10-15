@@ -59,7 +59,7 @@ Earlier versions appeared as a UniFi Gateway Lite, on which the controller won't
 | Clients, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
 | Client names | the hostname of the client's Kea reservation, else its DHCP lease name without the router's domain, else DNS or ARP |
 | Hostname, uptime, CPU, memory, load average | system information |
-| WAN speed test | measured by the daemon against the nearest fast [speedtest.net](https://www.speedtest.net) server, as UniFi gateways do |
+| WAN speed test | measured by the daemon against the nearest fast [speedtest.net](https://www.speedtest.net) server |
 
 Per-client traffic needs **Reporting > NetFlow** capturing the LAN interface.
 
@@ -77,7 +77,7 @@ For development and testing, the gateway can also run in Docker, reading from th
    | Lobby: Dashboard | hostname, version, uptime, CPU, memory, load average |
    | Diagnostics: ARP Table | client list |
    | Diagnostics: Network Insight | per-client traffic |
-   | Services: Dnsmasq DNS/DHCP: Settings *or* Services: DHCP: Kea(v4) | client hostnames from DHCP leases |
+   | Services: Dnsmasq DNS/DHCP: Settings *or* Services: DHCP: Kea(v4) | client hostnames from DHCP leases, the LAN's DHCP range at adoption |
    | Services: Unbound | upstream DNS servers |
    | System: Gateways | WAN latency, uptime and downtime |
 

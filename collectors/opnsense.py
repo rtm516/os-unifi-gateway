@@ -6,6 +6,7 @@ running off-box, configd when running on the router as a plugin. Only the
 interfaces are required; everything else degrades gracefully when the
 source cannot provide it.
 """
+import ipaddress
 import logging
 import re
 import time
@@ -227,6 +228,8 @@ class OPNsenseCollector:
         if self._due('dhcp_leases', 60):
             self.data['dhcp_leases'] = self._get_dhcp_leases()
             self._update_reservations()
+        if self._due('lan_config', 300):
+            self._update_lan_config()
         if self._due('latency', 60):
             self._update_wan_monitor()
         if self._due('nameservers', 300):
@@ -520,24 +523,26 @@ class OPNsenseCollector:
 
     def _track_wan(self, down):
         """The WAN's current online streak (`up_since`, None while down) and
-        total offline seconds (`downtime`). The controller charts how much
-        `downtime` grew in each interval, so it only ever counts up."""
+        how long the current outage has lasted (`downtime` seconds, 0 while
+        up). The controller records each outage from `downtime` (it started
+        that long ago; 0 ends it) and notifies when one passes 6 s and when
+        the WAN is back."""
         now = time.time()
         health = self._wan_health
         if health is None:
             # as far as we know, up since the router started
             health = self._wan_health = {
-                'checked': now, 'down': down, 'downtime': 0.0,
-                'up_since': None if down else now - self.uptime(),
-            }
-        if health['down']:
-            health['downtime'] += now - health['checked']
+                'up_since': None if down else now - self.uptime(), 'down_since': None}
         if down:
             health['up_since'] = None
-        elif health['up_since'] is None:
-            health['up_since'] = now
-        health.update(checked=now, down=down)
-        return {'up_since': health['up_since'], 'downtime': int(health['downtime'])}
+            if health['down_since'] is None:
+                health['down_since'] = now
+        else:
+            health['down_since'] = None
+            if health['up_since'] is None:
+                health['up_since'] = now
+        downtime = int(now - health['down_since']) if down else 0
+        return {'up_since': health['up_since'], 'downtime': downtime}
 
     # ── DHCP leases ──────────────────────────────────────────────────────
 
@@ -592,6 +597,53 @@ class OPNsenseCollector:
             self._reservations = {
                 row['hw_address'].lower(): row['hostname'].strip()
                 for row in rows if row.get('hw_address') and (row.get('hostname') or '').strip()}
+
+    def _update_lan_config(self):
+        """The LAN as a UniFi gateway reports it in `config_network_lan`:
+        the router's address and prefix, and the lease server's pool on it.
+        DHCP fields are left out while the pools cannot be read."""
+        lan = self.data['ip'].get(self.lan_port, {})
+        try:
+            network = ipaddress.ip_interface('%s/%s' % (lan['address'], lan['netmask'])).network
+        except (KeyError, ValueError):
+            self.data.pop('config_network_lan', None)
+            return
+        prefix = network.prefixlen
+        config = {'cidr': '%s/%d' % (lan['address'], prefix), 'vlan': 1}
+        rows = self._call('dhcp_subnets', self._lease_server) if self._lease_server else None
+        if rows is not None:
+            pool = self._lan_pool(rows, network)
+            config['dhcp_enabled'] = pool is not None
+            if pool:
+                config['dhcp_range_start'] = '%s/%d' % (pool[0], prefix)
+                config['dhcp_range_stop'] = '%s/%d' % (pool[1], prefix)
+        elif 'dhcp_enabled' in self.data.get('config_network_lan', {}):
+            # keep what was last read, as for reservations
+            old = self.data['config_network_lan']
+            config.update({k: v for k, v in old.items() if k.startswith('dhcp_')})
+        self.data['config_network_lan'] = config
+
+    @staticmethod
+    def _lan_pool(rows, network):
+        """(first, last) address of the first pool inside `network`."""
+        for row in rows:
+            for pool in re.split(r'[\n,]+', row.get('pools') or ''):
+                pool = pool.strip()
+                try:
+                    if '-' in pool:
+                        first, last = (ipaddress.ip_address(a.strip()) for a in pool.split('-', 1))
+                    elif pool:
+                        hosts = ipaddress.ip_network(pool, strict=False)
+                        first, last = hosts[0], hosts[-1]
+                        if hosts.num_addresses > 2:
+                            first, last = first + 1, last - 1
+                    else:
+                        continue
+                except ValueError:
+                    continue
+                if first in network and last in network:
+                    return str(first), str(last)
+        return None
 
     @staticmethod
     def _parse_leases(rows):
@@ -690,7 +742,8 @@ class OPNsenseCollector:
         names = {}
         for mac, entry in hosts.items():
             name = self._client_name(self._reservations.get(mac), lease_names.get(mac),
-                                     rdns.get(entry['ip']), arp_names.get(mac))
+                                     rdns.get(entry['ip']), arp_names.get(mac),
+                                     ip=entry['ip'])
             name = name or self._names.get(mac)
             if name:
                 entry['hostname'] = names[mac] = name
@@ -698,9 +751,11 @@ class OPNsenseCollector:
 
         return list(hosts.values())
 
-    def _short_name(self, name):
+    def _short_name(self, name, ip=''):
         """`name` without a trailing dot or the router's domain; None if
-        unusable."""
+        unusable. That includes the name Kea makes up for a client that
+        sends none, `<prefix>-<its address with dashes>` (also in DNS when
+        Kea registers it): a UniFi gateway reports no name then."""
         name = (name or '').strip().rstrip('.')
         if not name or name in ('*', '?'):
             return None
@@ -709,18 +764,20 @@ class OPNsenseCollector:
                 name = name[:-len(self._domain) - 1]
         else:
             name = name.split('.')[0]
+        if ip and name.endswith('-' + ip.replace('.', '-')):
+            return None
         return name or None
 
-    def _client_name(self, *candidates):
+    def _client_name(self, *candidates, ip=''):
         """The first usable name, without the router's domain.
 
         UniFi switches and APs report the Host Name a client puts in its DHCP
-        requests, and the controller shows whichever device reported last,
-        so this aims for that name. A DHCP reservation's hostname is it as
-        entered; Kea's lease name is it lower-cased and qualified with the
-        router's domain; DNS and ARP name clients that have neither.
+        requests, and so does a UniFi gateway (dnsmasq keeps it as sent);
+        the controller keeps a UniFi OS gateway's name over theirs. A DHCP reservation's hostname is it as entered; Kea's lease
+        name is it lower-cased and qualified with the router's domain; DNS
+        and ARP name clients that have neither.
         """
-        return next((n for n in map(self._short_name, candidates) if n), None)
+        return next((n for n in (self._short_name(c, ip) for c in candidates) if n), None)
 
     def _reverse_dns(self, addresses):
         """{ip: DNS name} for client addresses.

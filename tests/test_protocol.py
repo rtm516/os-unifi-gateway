@@ -69,6 +69,30 @@ def test_uxg_fields(gateway_config, collector, device):
     assert payload['usg2_caps'] & 16 and payload['inform_min_interval'] == 2
 
 
+def test_network_config(gateway_config, collector, device):
+    """Right after adoption the controller makes its LAN match
+    config_network_lan; the WAN stays "dhcp" so it keeps its own."""
+    from unifi_protocol import create_inform
+    lan = {'cidr': '192.168.48.254/23', 'vlan': 1, 'dhcp_enabled': True,
+           'dhcp_range_start': '192.168.49.1/23', 'dhcp_range_stop': '192.168.49.254/23'}
+    collector.data['config_network_lan'] = lan
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    assert payload['config_network_lan'] == lan
+    assert payload['config_network_wan'] == {'type': 'dhcp'}
+
+    collector.data.pop('config_network_lan')  # no LAN address
+    assert 'config_network_lan' not in json.loads(create_inform(gateway_config, collector, device))
+
+
+def test_no_usg_feature_flags(gateway_config, collector, device):
+    """The controller turns these into usg_caps bits (DPI, portal, RADIUS)
+    for any gateway; UniFi OS firmware doesn't send them."""
+    from unifi_protocol import create_inform
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    assert not {'has_dpi', 'has_porta', 'radius_caps', 'has_dnsmasq_hostfile_update'} & set(payload)
+    assert payload['has_ssh_disable'] and payload['has_default_route_distance']
+
+
 def test_sys_stats(gateway_config, collector, device):
     """The gateway panel's load average."""
     from unifi_protocol import create_inform
@@ -192,13 +216,14 @@ def test_uptime_stats(gateway_config, collector, device):
     collector.data['wan_monitor'].update(loss=12.5)
     wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
     assert wan['alerting_monitors'][0]['availability'] == 87.5
+    # down for 5 minutes: no uptime, or the controller takes the WAN as back
     collector.data['wan_monitor'].update(down=True, up_since=None, downtime=300)
     wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
-    assert (wan['availability'], wan['uptime'], wan['downtime']) == (0.0, 0, 300)
-    # back up: the streak restarts, the offline total stays
-    collector.data['wan_monitor'].update(down=False, up_since=time.time() - 60)
+    assert (wan['availability'], wan['downtime']) == (0.0, 300) and 'uptime' not in wan
+    # back up: a new streak, and downtime 0 ends the outage
+    collector.data['wan_monitor'].update(down=False, up_since=time.time() - 60, downtime=0)
     wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
-    assert 59 <= wan['uptime'] <= 61 and wan['downtime'] == 300
+    assert 59 <= wan['uptime'] <= 61 and wan['downtime'] == 0
 
     del collector.data['wan_monitor']  # gateway status not readable
     assert 'uptime_stats' not in json.loads(create_inform(gateway_config, collector, device))

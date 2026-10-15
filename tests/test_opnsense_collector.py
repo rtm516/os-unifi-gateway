@@ -351,7 +351,7 @@ class TestSystem:
         assert monitor == {'latency': 8.4, 'loss': 0.0, 'target': '81.2.3.1',
                            'down': False, 'downtime': 0}
 
-    def test_wan_downtime_counts_up(self, gateway_config, fake_api):
+    def test_wan_downtime_is_the_current_outage(self, gateway_config, fake_api):
         items = fake_api.responses['/api/routes/gateway/status']['items']
         with patch('collectors.opnsense.time.time', return_value=10000.0):
             dc = make(gateway_config, fake_api)
@@ -368,9 +368,13 @@ class TestSystem:
         assert (down['down'], down['up_since'], down['latency'], down['loss'],
                 down['downtime']) == (True, None, 0.0, 100.0, 0)
         assert check(10180.0, 'down')['downtime'] == 120
+        # back up: the outage is over and a new streak starts
         back = check(10240.0, 'none')
-        assert (back['down'], back['downtime'], back['up_since']) == (False, 180, 10240.0)
-        assert check(10300.0, 'none')['downtime'] == 180
+        assert (back['down'], back['downtime'], back['up_since']) == (False, 0, 10240.0)
+        assert check(10300.0, 'none')['downtime'] == 0
+        # the next outage counts from its own start
+        check(10360.0, 'down')
+        assert check(10420.0, 'down')['downtime'] == 60
 
     def test_wan_monitor_target_and_loss(self, gateway_config):
         api = FakeAPI()
@@ -503,7 +507,7 @@ class TestClients:
 
     def test_reservation_names_come_first(self, gateway_config, fake_api):
         # UniFi switches and APs report the Host Name a client sends, and the
-        # controller shows whichever device reported last. Kea lower-cases
+        # controller keeps a UniFi OS gateway's name over theirs. Kea lower-cases
         # and qualifies it in the lease; a reservation keeps it as entered.
         leases = fake_api.responses.pop('/api/dnsmasq/leases/search')
         leases['rows'][0]['hostname'] = 'pi-kitchen.example.net.'
@@ -541,6 +545,19 @@ class TestClients:
         fake_api.responses[lookup] = self.reverse_lookup({})
         dc = make(gateway_config, fake_api)
         assert self.names(dc)['00:00:5e:00:53:03'] == 'phone.lan'
+
+    def test_kea_generated_names_are_dropped(self, gateway_config, fake_api):
+        # Kea names a client that sends no Host Name after its address (and
+        # registers that in DNS); a UniFi gateway reports no name for it
+        leases = fake_api.responses['/api/dnsmasq/leases/search']['rows']
+        leases[0]['hostname'] = 'host-192-168-48-2.example.net'
+        lookup = '/api/diagnostics/dns/reverse_lookup'
+        fake_api.responses[lookup] = self.reverse_lookup(
+            {'192.168.48.2': 'host-192-168-48-2.example.net', '10.8.1.1': 'host-10-8-1-1.example.net'})
+        dc = make(gateway_config, fake_api)
+        names = self.names(dc)
+        assert names['00:00:5e:00:53:02'] is None
+        assert names['00:00:5e:00:53:03'] == 'phone.lan'  # from ARP
 
     def test_names_survive_refreshes_that_lack_them(self, gateway_config, fake_api):
         lookup = '/api/diagnostics/dns/reverse_lookup'
@@ -622,3 +639,57 @@ class TestClients:
         flow_calls = [c for c in fake_api.calls if 'networkinsight' in c]
         assert '/FlowSourceAddrTotals/3000/3300/' in flow_calls[-1]
 
+
+
+class TestLanConfig:
+    """config_network_lan: the controller makes its LAN match it at adoption."""
+
+    def test_kea_pool_on_the_lan(self, gateway_config, fake_api):
+        fake_api.responses['/api/kea/leases4/search'] = fake_api.responses.pop('/api/dnsmasq/leases/search')
+        fake_api.responses['/api/kea/dhcpv4/search_subnet'] = {'rows': [
+            {'subnet': '10.0.0.0/24', 'pools': '10.0.0.10-10.0.0.20'},
+            {'subnet': '192.168.48.0/23', 'pools': '192.168.49.0/24\n192.168.48.100-192.168.48.200'},
+        ]}
+        dc = make(gateway_config, fake_api)
+        assert dc.data['config_network_lan'] == {
+            'cidr': '192.168.48.254/23', 'vlan': 1, 'dhcp_enabled': True,
+            'dhcp_range_start': '192.168.49.1/23', 'dhcp_range_stop': '192.168.49.254/23'}
+
+    def test_kea_pool_lines_may_have_spaces(self, gateway_config, fake_api):
+        # Kea keeps one pool per line and allows spaces around the dash
+        fake_api.responses['/api/kea/leases4/search'] = fake_api.responses.pop('/api/dnsmasq/leases/search')
+        fake_api.responses['/api/kea/dhcpv4/search_subnet'] = {'rows': [
+            {'subnet': '192.168.48.0/23', 'pools': '\n192.168.48.100 - 192.168.48.200 \n'}]}
+        config = make(gateway_config, fake_api).data['config_network_lan']
+        assert (config['dhcp_range_start'], config['dhcp_range_stop']) == \
+            ('192.168.48.100/23', '192.168.48.200/23')
+
+    def test_dnsmasq_range(self, gateway_config, fake_api):
+        ranges = '/api/dnsmasq/settings/search_range'
+        fake_api.responses[ranges] = {'rows': [
+            {'interface': 'opt1', 'start_addr': '10.0.0.10', 'end_addr': '10.0.0.20'},
+            {'interface': 'lan', 'start_addr': '192.168.48.10', 'end_addr': '192.168.48.99'}]}
+        dc = make(gateway_config, fake_api)
+        config = dc.data['config_network_lan']
+        assert (config['dhcp_range_start'], config['dhcp_range_stop']) == \
+            ('192.168.48.10/23', '192.168.48.99/23')
+
+        # pools that can't be read leave the last ones in place
+        fake_api.forbidden.add(ranges)
+        dc.updated['lan_config'] = 0
+        dc.update()
+        assert dc.data['config_network_lan'] == config
+
+        # a server without a pool on the LAN doesn't serve it
+        fake_api.forbidden.clear()
+        dc._forbidden.clear()
+        fake_api.responses[ranges]['rows'].pop()
+        dc.updated['lan_config'] = 0
+        dc.update()
+        assert dc.data['config_network_lan'] == {
+            'cidr': '192.168.48.254/23', 'vlan': 1, 'dhcp_enabled': False}
+
+    def test_without_pools(self, gateway_config, fake_api):
+        # no access to the DHCP settings: just the LAN subnet
+        dc = make(gateway_config, fake_api)
+        assert dc.data['config_network_lan'] == {'cidr': '192.168.48.254/23', 'vlan': 1}

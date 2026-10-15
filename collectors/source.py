@@ -80,6 +80,13 @@ class Source:
         in its leases."""
         raise NotImplementedError
 
+    def dhcp_subnets(self, server):
+        """IPv4 address pools of `server` (one of LEASE_SERVERS) as rows
+        shaped like Kea's subnets: {subnet: 'a.b.c.d/nn' or '', pools:
+        'start-end' (maybe with spaces around the dash) or 'a.b.c.d/nn',
+        one per line}."""
+        raise NotImplementedError
+
     def reverse_dns(self, addresses):
         """{address: name} as the router's resolver answers PTR lookups,
         like /api/diagnostics/dns/reverse_lookup. Addresses without a name

@@ -294,7 +294,7 @@ class TestOoklaBackend:
         assert backend.host == 'server-1002.prod.hosts.ooklaserver.net'
         assert server == {
             'provider': 'Example ISP', 'provider_url': 'https://www.speedtest.net/',
-            'city': 'Exampleton', 'country': 'Exampleton', 'cc': 'GB', 'id': '1002',
+            'city': 'Exampleton', 'country': 'United Kingdom', 'countryCode': 'GB', 'id': '1002',
             'lat': 51.0, 'lon': -1.0,
         }
         conn = fake_http.instances[0]
