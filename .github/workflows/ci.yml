@@ -24,7 +24,7 @@ jobs:
 
       - name: Lint
         # explicit rules: newer ruff releases widen the default set
-        run: ruff check --exclude poc/ --select E,F --ignore E401,E402,E501 .
+        run: ruff check --select E,F --ignore E401,E402,E501 .
 
   test:
     runs-on: ubuntu-latest

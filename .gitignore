@@ -5,8 +5,7 @@ venv
 __pycache__
 conf/unifi-gateway.conf
 conf/unhandled_commands.json
-speedtest.json
-*.pid
+conf/speedtest.json
 
 # OPNsense API key downloads
 *apikey*.txt

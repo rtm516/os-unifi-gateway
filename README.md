@@ -106,7 +106,7 @@ OPNSENSE_HOST=192.168.1.1 OPNSENSE_API_KEY_FILE=apikey.txt \
 UNIFI_ADOPT_URL=http://controller:8080/inform python unifi_gateway.py run
 ```
 
-Commands: `run` (foreground), `start` / `stop` / `restart` (background daemon), `set-adopt -s <url>`, `dump`, `status`.
+Commands: `run` (foreground), `set-adopt -s <url>`, `dump`, `status`.
 
 ## Configuration reference
 

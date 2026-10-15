@@ -146,7 +146,6 @@ def fake_api():
 def gateway_config():
     cfg = configparser.RawConfigParser()
     cfg.read_dict({
-        'global': {'pid_file': 'test.pid'},
         'opnsense': {'host': '192.168.48.254', 'api_key': 'k', 'api_secret': 's'},
         'gateway': {
             'is_adopted': 'True',

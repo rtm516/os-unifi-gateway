@@ -94,12 +94,10 @@ def test_env_names_are_understood_by_daemon():
         names = set(re.findall(r'\b([A-Z_]{6,})=', f.read()))
     import importlib
     import sys
-    from unittest.mock import MagicMock, patch
-    with patch.dict(sys.modules, {'daemon': MagicMock()}):
-        sys.modules.pop('unifi_gateway', None)
-        gateway = importlib.import_module('unifi_gateway')
-        known = set(gateway.ENV_OVERRIDES) | {'UNIFI_ADOPT_URL'}
-        sys.modules.pop('unifi_gateway', None)
+    sys.modules.pop('unifi_gateway', None)
+    gateway = importlib.import_module('unifi_gateway')
+    known = set(gateway.ENV_OVERRIDES) | {'UNIFI_ADOPT_URL'}
+    sys.modules.pop('unifi_gateway', None)
     assert names <= known, names - known
 
 

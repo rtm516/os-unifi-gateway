@@ -14,7 +14,6 @@ import time
 import requests
 
 from collectors import SourceError, create_collector
-from daemon import Daemon
 from devices import Device
 from isp import IspInfo
 from speedtest import SpeedTest
@@ -61,7 +60,6 @@ verify_ssl = False
 
 DEFAULTS = {
     'global': {
-        'pid_file': 'unifi-gateway.pid',
         'disable_broadcast': 'True',
     },
     'opnsense': {},
@@ -134,9 +132,9 @@ UNHANDLED_LOG = os.environ.get(
 )
 
 
-class UnifiGateway(Daemon):
+class UnifiGateway:
 
-    def __init__(self, **kwargs):
+    def __init__(self):
         self.interval = 10
         self.live = False
         self.running = True
@@ -166,9 +164,6 @@ class UnifiGateway(Daemon):
         self.datacollector = None
         self._unhandled = {}
         self._adopt_logged = False
-        Daemon.__init__(
-            self, pidfile=self.config.get('global', 'pid_file'), **kwargs
-        )
 
     def _set_runtime(self, section, option, value):
         key = (section, option)
@@ -615,10 +610,7 @@ def main():
     parser = argparse.ArgumentParser(description='UniFi Gateway Emulator')
     subparsers = parser.add_subparsers(dest='command')
 
-    subparsers.add_parser('start', help='Start as background daemon')
-    subparsers.add_parser('stop', help='Stop the daemon')
-    subparsers.add_parser('restart', help='Restart the daemon')
-    subparsers.add_parser('run', help='Run in foreground')
+    subparsers.add_parser('run', help='Run in the foreground')
     subparsers.add_parser(
         'dump', help='Collect from OPNsense once and print the inform payload'
     )
@@ -636,18 +628,12 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    if args.command in ('start', 'run', 'set-adopt', 'dump'):
+    if args.command in ('run', 'set-adopt', 'dump'):
         ensure_config(CONFIG_FILE)
 
     gw = UnifiGateway()
 
-    if args.command == 'start':
-        gw.start()
-    elif args.command == 'stop':
-        gw.stop()
-    elif args.command == 'restart':
-        gw.restart()
-    elif args.command == 'run':
+    if args.command == 'run':
         gw.run()
     elif args.command == 'dump':
         gw.dump()
