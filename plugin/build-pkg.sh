@@ -61,6 +61,8 @@ if [ -f /usr/local/etc/rc.d/configd ]; then /usr/local/etc/rc.d/configd restart;
 if [ -f /usr/local/opnsense/mvc/script/run_migrations.php ]; then /usr/local/opnsense/mvc/script/run_migrations.php OPNsense/UnifiGateway; fi
 if [ -f /usr/local/etc/rc.configure_plugins ]; then echo "Reloading plugin configuration"; /usr/local/etc/rc.configure_plugins POST_INSTALL; fi
 if [ -f /usr/local/sbin/configctl ]; then echo -n "Reloading template OPNsense/UnifiGateway: "; /usr/local/sbin/configctl template reload OPNsense/UnifiGateway; fi
+# An upgrade stops the service (old package's PRE_DEINSTALL); bring it back
+if [ -x /usr/local/etc/rc.d/unifi_gateway ] && /usr/local/etc/rc.d/unifi_gateway enabled; then /usr/local/etc/rc.d/unifi_gateway restart; fi
 EOF
 cat > "$META/+PRE_DEINSTALL" <<'EOF'
 if [ -x /usr/local/etc/rc.d/unifi_gateway ]; then /usr/local/etc/rc.d/unifi_gateway stop || true; fi

@@ -242,9 +242,37 @@ class TestRun:
             if error:
                 raise error
         with patch.object(gw, '_init_collector', side_effect=init), \
-             patch('unifi_gateway.time.sleep') as sleep:
+             patch.object(gw, '_sleep') as sleep:
             assert gw._wait_for_collector() is True
         sleep.assert_called_once_with(30)
+
+    def test_sleep_runs_full_interval(self, tmp_path, _mock_daemon):
+        conf = tmp_path / 'full.conf'
+        conf.write_text('')
+        gw = _gateway(_mock_daemon, conf)
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+        with patch('unifi_gateway.time.monotonic', side_effect=lambda: clock[0]),              patch('unifi_gateway.time.sleep', side_effect=sleep):
+            gw._sleep(10)
+        assert clock[0] == 10
+
+    def test_signal_ends_sleep(self, tmp_path, _mock_daemon):
+        """SIGTERM must not wait out the interval: the rc.d script gives the
+        daemon 10 s to exit."""
+        conf = tmp_path / 'full.conf'
+        conf.write_text('')
+        gw = _gateway(_mock_daemon, conf)
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+            if clock[0] >= 2:
+                gw._handle_signal(15, None)
+        with patch('unifi_gateway.time.monotonic', side_effect=lambda: clock[0]),              patch('unifi_gateway.time.sleep', side_effect=sleep):
+            gw._sleep(60)
+        assert clock[0] <= 2.5
 
 
 class TestSpeedTest:

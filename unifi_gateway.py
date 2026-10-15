@@ -203,7 +203,7 @@ class UnifiGateway(Daemon):
             except SourceError as e:
                 logger.error('%s', _describe_source_error(e))
                 logger.info('Retrying in 30s')
-                time.sleep(30)
+                self._sleep(30)
         return False
 
     def _load_unhandled(self):
@@ -288,7 +288,7 @@ class UnifiGateway(Daemon):
             else:
                 self._send_broadcast(broadcast_index)
                 broadcast_index += 1
-            time.sleep(self.interval)
+            self._sleep(self.interval)
             try:
                 self.datacollector.update()
             except SourceError as e:
@@ -310,7 +310,7 @@ class UnifiGateway(Daemon):
             except Exception as e:
                 logger.error('Error in inform loop: %s', e, exc_info=True)
                 self.interval = min(self.interval * 2, 60)
-            time.sleep(self._inform_delay())
+            self._sleep(self._inform_delay())
 
         logger.info('Shutting down gracefully')
 
@@ -371,6 +371,17 @@ class UnifiGateway(Daemon):
     def _handle_signal(self, signum, frame):
         logger.info('Received signal %d, shutting down', signum)
         self.running = False
+
+    def _sleep(self, seconds):
+        """Sleep, but return soon after a signal clears self.running: Python
+        resumes an interrupted time.sleep, and the rc.d script only waits
+        10 s for the daemon to exit."""
+        deadline = time.monotonic() + seconds
+        while self.running:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, 0.5))
 
     def _handle_response(self, response):
         resp_type = response.get('_type', '')

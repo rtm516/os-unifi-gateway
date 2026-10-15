@@ -111,3 +111,21 @@ def test_package_bundles_every_module():
         bundled = set(re.search(r'for f in ([^;]+); do', f.read()).group(1).split())
     modules = {name for name in os.listdir(root) if name.endswith('.py')}
     assert modules <= bundled
+
+
+def _package_script(name):
+    with open(os.path.join(PLUGIN, 'build-pkg.sh')) as f:
+        text = f.read()
+    return re.search(r'"\$META/\+%s" <<\'EOF\'\n(.*?)\nEOF\n' % name, text, re.S).group(1)
+
+
+def test_upgrade_restarts_enabled_service():
+    """pkg upgrade runs the old package's PRE_DEINSTALL, which stops the
+    service, and then the new one's POST_INSTALL, which must start it again;
+    only once the template reload has written rc.conf.d, and only if enabled."""
+    assert 'rc.d/unifi_gateway stop' in _package_script('PRE_DEINSTALL')
+    lines = _package_script('POST_INSTALL').splitlines()
+    reload = next(i for i, line in enumerate(lines) if 'template reload OPNsense/UnifiGateway' in line)
+    start = next(i for i, line in enumerate(lines) if 'rc.d/unifi_gateway restart' in line)
+    assert reload < start
+    assert 'rc.d/unifi_gateway enabled' in lines[start]
