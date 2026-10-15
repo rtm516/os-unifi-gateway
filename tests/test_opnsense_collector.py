@@ -426,10 +426,10 @@ class TestClients:
 
     def test_lease_expiry(self, gateway_config, fake_api):
         rows = fake_api.responses['/api/dnsmasq/leases/search']['rows']
-        rows[0]['expire'] = 1792092112
+        rows[0]['expire'] = 1700000000
         rows[1]['expire'] = 0  # a lease that never ends
         dc = make(gateway_config, fake_api)
-        assert [lease.get('expire') for lease in dc.data['dhcp_leases']] == [1792092112, None]
+        assert [lease.get('expire') for lease in dc.data['dhcp_leases']] == [1700000000, None]
 
     def test_kea_leases(self, gateway_config, fake_api):
         leases = fake_api.responses.pop('/api/dnsmasq/leases/search')
@@ -437,6 +437,29 @@ class TestClients:
         dc = make(gateway_config, fake_api)
         assert dc._lease_server == 'kea'
         assert len(dc.data['dhcp_leases']) == 2
+
+    def test_lease_source_with_leases_wins(self, gateway_config, fake_api):
+        # on the router Dnsmasq's lease action answers next to Kea, with none
+        leases = fake_api.responses['/api/dnsmasq/leases/search']
+        fake_api.responses['/api/kea/leases4/search'] = leases
+        fake_api.responses['/api/dnsmasq/leases/search'] = {'total': 0, 'rows': []}
+        dc = make(gateway_config, fake_api)
+        assert dc._lease_server == 'kea'
+        assert len(dc.data['dhcp_leases']) == 2
+
+        # Kea stays first, and is left when it has no leases but another has
+        fake_api.responses['/api/kea/leases4/search'] = {'total': 0, 'rows': []}
+        fake_api.responses['/api/dnsmasq/leases/search'] = leases
+        dc.updated['dhcp_leases'] = 0
+        dc.update()
+        assert dc._lease_server == 'dnsmasq'
+        assert len(dc.data['dhcp_leases']) == 2
+
+        # no server with leases: none reported
+        fake_api.responses['/api/dnsmasq/leases/search'] = {'total': 0, 'rows': []}
+        dc.updated['dhcp_leases'] = 0
+        dc.update()
+        assert dc.data['dhcp_leases'] == []
 
     def test_dhcp_none(self, gateway_config, fake_api):
         gateway_config.set('opnsense', 'dhcp', 'none')
@@ -478,34 +501,53 @@ class TestClients:
         dc.update()
         return self.names(dc)
 
-    def test_one_name_per_client_by_precedence(self, gateway_config, fake_api):
-        # A client named three ways, as on a box moved from ISC dhcpd to Kea:
-        # ARP still carries ISC's client-hostname, Kea qualifies and
-        # lower-cases it, and the PTR record is what a UniFi switch reports.
-        # The controller shows whichever name the last device sent.
-        arp = fake_api.responses['/api/diagnostics/interface/search_arp']['rows']
-        arp[0]['hostname'] = 'OCTO-CADLITE'
-        leases = fake_api.responses['/api/dnsmasq/leases/search']['rows']
-        leases[0]['hostname'] = 'octo-cadlite.example.net.'
-        lookup = '/api/diagnostics/dns/reverse_lookup'
-        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'Octo-CadLite.example.net'})
+    def test_reservation_names_come_first(self, gateway_config, fake_api):
+        # UniFi switches and APs report the Host Name a client sends, and the
+        # controller shows whichever device reported last. Kea lower-cases
+        # and qualifies it in the lease; a reservation keeps it as entered.
+        leases = fake_api.responses.pop('/api/dnsmasq/leases/search')
+        leases['rows'][0]['hostname'] = 'pi-kitchen.example.net.'
+        fake_api.responses['/api/kea/leases4/search'] = leases
+        reservations = '/api/kea/dhcpv4/search_reservation'
+        fake_api.responses[reservations] = {'rows': [
+            {'hw_address': '00:00:5E:00:53:02', 'hostname': 'Pi-Kitchen'},
+            {'hw_address': '00:00:5e:00:53:99', 'hostname': ''},
+        ]}
+        fake_api.responses['/api/diagnostics/dns/reverse_lookup'] = \
+            self.reverse_lookup({'192.168.48.2': 'media.example.net'})
         dc = make(gateway_config, fake_api)
-        assert self.names(dc)['00:00:5e:00:53:02'] == 'Octo-CadLite.example.net'
+        assert self.names(dc)['00:00:5e:00:53:02'] == 'Pi-Kitchen'
 
-        # without a PTR record the lease name wins over ARP, minus the dot
+        # reservations that cannot be read are kept
+        fake_api.forbidden.add(reservations)
+        assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'Pi-Kitchen'
+
+    def test_name_without_a_reservation(self, gateway_config, fake_api):
+        # the lease name without the router's domain, over DNS (which may be
+        # an alias) and ARP
+        arp = fake_api.responses['/api/diagnostics/interface/search_arp']['rows']
+        arp[0]['hostname'] = 'PRINTER-3D'
+        leases = fake_api.responses['/api/dnsmasq/leases/search']['rows']
+        leases[0]['hostname'] = 'printer-3d.example.net.'
+        lookup = '/api/diagnostics/dns/reverse_lookup'
+        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'media.example.net'})
+        dc = make(gateway_config, fake_api)
+        assert self.names(dc)['00:00:5e:00:53:02'] == 'printer-3d'
+
+        # a client without a lease is named by DNS, then ARP
+        fake_api.responses[lookup] = self.reverse_lookup({'10.8.1.1': 'phone.example.net'})
+        dc = make(gateway_config, fake_api)
+        assert self.names(dc)['00:00:5e:00:53:03'] == 'phone'
         fake_api.responses[lookup] = self.reverse_lookup({})
         dc = make(gateway_config, fake_api)
-        assert self.names(dc)['00:00:5e:00:53:02'] == 'octo-cadlite.example.net'
-
-        # and ARP only names clients nothing else does
         assert self.names(dc)['00:00:5e:00:53:03'] == 'phone.lan'
 
     def test_names_survive_refreshes_that_lack_them(self, gateway_config, fake_api):
         lookup = '/api/diagnostics/dns/reverse_lookup'
-        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'pi.example.net'})
+        fake_api.responses[lookup] = self.reverse_lookup({'10.8.1.1': 'phone.example.net'})
         dc = make(gateway_config, fake_api)
         first = self.names(dc)
-        assert first['00:00:5e:00:53:02'] == 'pi.example.net'
+        assert (first['00:00:5e:00:53:02'], first['00:00:5e:00:53:03']) == ('pi', 'phone')
 
         # the resolver answers with the bare address, then fails outright
         fake_api.responses[lookup] = self.reverse_lookup({})
@@ -518,28 +560,29 @@ class TestClients:
             row.pop('hostname', None)
         assert self.rebuild(dc) == first
         fake_api.responses['/api/dnsmasq/leases/search']['rows'] = []
-        assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'pi.example.net'
+        assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'pi'
 
         # clients that are gone are forgotten
         assert set(dc._names) == {'00:00:5e:00:53:02', '00:00:5e:00:53:03'}
-        assert set(dc._rdns) == {'192.168.48.2'}
+        assert set(dc._rdns) == {'10.8.1.1'}
 
     def test_rotating_ptr_records_keep_one_name(self, gateway_config, fake_api):
         # a host override with an alias gives the address two PTR records,
         # which Unbound hands out in turn
+        fake_api.responses['/api/diagnostics/interface/search_arp']['rows'][1]['hostname'] = ''
         lookup = '/api/diagnostics/dns/reverse_lookup'
-        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'scarif.example.net'})
+        fake_api.responses[lookup] = self.reverse_lookup({'10.8.1.1': 'nas.example.net'})
         with patch('collectors.opnsense.time.time', return_value=1000.0):
             dc = make(gateway_config, fake_api)
-        for t, answer in ((1060, 'dashboard.example.net'), (1120, 'scarif.example.net'),
-                          (1180, 'dashboard.example.net'), (1900, 'dashboard.example.net')):
-            fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': answer})
+        for t, answer in ((1060, 'media.example.net'), (1120, 'nas.example.net'),
+                          (1180, 'media.example.net'), (1900, 'media.example.net')):
+            fake_api.responses[lookup] = self.reverse_lookup({'10.8.1.1': answer})
             with patch('collectors.opnsense.time.time', return_value=float(t)):
-                assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'scarif.example.net'
+                assert self.rebuild(dc)['00:00:5e:00:53:03'] == 'nas'
 
         # a rename shows once the old name has stayed away long enough
         with patch('collectors.opnsense.time.time', return_value=1120.0 + 901):
-            assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'dashboard.example.net'
+            assert self.rebuild(dc)['00:00:5e:00:53:03'] == 'media'
 
     def test_reverse_dns_is_batched_and_optional(self, gateway_config, fake_api):
         dc = make(gateway_config, fake_api)  # no endpoint: lease and ARP names

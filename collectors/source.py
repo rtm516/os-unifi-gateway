@@ -74,6 +74,12 @@ class Source:
         hwaddr, hostname, state?}."""
         raise NotImplementedError
 
+    def dhcp_reservations(self, server):
+        """Reservations of `server` (one of LEASE_SERVERS) as rows of
+        {hw_address, hostname}, the hostname as entered. Kea lower-cases it
+        in its leases."""
+        raise NotImplementedError
+
     def reverse_dns(self, addresses):
         """{address: name} as the router's resolver answers PTR lookups,
         like /api/diagnostics/dns/reverse_lookup. Addresses without a name

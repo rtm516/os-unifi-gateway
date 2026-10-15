@@ -1,5 +1,5 @@
-# A throwaway UniFi Network controller plus the gateway, for trying things out
-# without touching a real controller:
+# A throwaway UniFi Network controller (10.6.106) plus the gateway, for trying
+# things out without touching a real controller:
 #
 #   OPNSENSE_HOST=192.168.1.1 UNIFI_GW_APIKEY=./conf/apikey.txt \
 #     docker compose -f docker-compose.dev.yml up -d --build
@@ -7,15 +7,35 @@
 # Then open https://127.0.0.1:18443 (set UNIFI_BIND=0.0.0.0 to reach it from
 # other machines), finish the setup wizard, and adopt the
 # pending gateway. `docker compose -f docker-compose.dev.yml down -v` wipes it.
+#
+# Network 10.x needs its own MongoDB; dev/mongo-init.js creates its user.
 
 services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    volumes:
+      - ./dev/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - mongo-data:/data/db
+
   unifi:
-    image: jacobalberty/unifi:latest
+    image: linuxserver/unifi-network-application:10.6.106
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      - MONGO_HOST=mongo
+      - MONGO_PORT=27017
+      - MONGO_USER=unifi
+      - MONGO_PASS=unifi
+      - MONGO_DBNAME=ace
+      - MONGO_AUTHSOURCE=admin
+      - MEM_LIMIT=1024
     ports:
       - "${UNIFI_BIND:-127.0.0.1}:18443:8443"
       - "${UNIFI_BIND:-127.0.0.1}:18080:8080"
     volumes:
-      - unifi-data:/unifi
+      - unifi-config:/config
 
   gateway:
     build: .
@@ -32,5 +52,6 @@ services:
       - UNIFI_GW_LOG_LEVEL=INFO
 
 volumes:
-  unifi-data:
+  mongo-data:
+  unifi-config:
   gateway-conf:

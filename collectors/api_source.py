@@ -96,6 +96,12 @@ class APISource(Source):
         path, privilege = LEASE_ENDPOINTS[server]
         return _rows(self._get(path, privilege, LIST_ALL))
 
+    def dhcp_reservations(self, server):
+        if server != 'kea':
+            return []
+        return _rows(self._get('/api/kea/dhcpv4/search_reservation',
+                               LEASE_ENDPOINTS['kea'][1], LIST_ALL))
+
     def reverse_dns(self, addresses):
         names = {}
         addresses = list(addresses)

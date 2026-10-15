@@ -241,6 +241,12 @@ class LocalSource(Source):
             raise SourceError('dhcp leases', None, '%s is not supported on-box' % server)
         return self._action(*LEASE_ACTIONS[server]).get('records', [])
 
+    def dhcp_reservations(self, server):
+        if server != 'kea':
+            return []
+        return [{'hw_address': node.findtext('hw_address', ''), 'hostname': node.findtext('hostname', '')}
+                for node in self._config().findall('OPNsense/Kea/dhcp4/reservations/reservation')]
+
     def reverse_dns(self, addresses):
         def lookup(address):
             try:

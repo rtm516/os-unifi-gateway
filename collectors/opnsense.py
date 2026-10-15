@@ -188,6 +188,8 @@ class OPNsenseCollector:
         self._links = {}
         self._names = {}
         self._rdns = {}
+        self._domain = ''
+        self._reservations = {}
         self._wan_health = None
         self._started = time.time()
 
@@ -224,6 +226,7 @@ class OPNsenseCollector:
             self._update_system()
         if self._due('dhcp_leases', 60):
             self.data['dhcp_leases'] = self._get_dhcp_leases()
+            self._update_reservations()
         if self._due('latency', 60):
             self._update_wan_monitor()
         if self._due('nameservers', 300):
@@ -440,7 +443,8 @@ class OPNsenseCollector:
     def _update_system(self):
         info = self._call('system_information')
         if info:
-            self.data['hostname'] = info.get('name', '').split('.')[0]
+            self.data['hostname'], _, domain = info.get('name', '').partition('.')
+            self._domain = domain.lower()
             versions = info.get('versions') or []
             if versions:
                 self.data['os_version'] = versions[0]
@@ -544,9 +548,14 @@ class OPNsenseCollector:
         if configured in LEASE_SERVERS:
             order = [configured]
         else:
-            order = [self._lease_server] if self._lease_server else list(LEASE_SERVERS)
+            # the server that had leases last time first. On the router every
+            # server's lease action answers, if only with no leases (Dnsmasq
+            # next to Kea), so the first to answer is not necessarily the one
+            # handing out addresses
+            order = sorted(LEASE_SERVERS, key=lambda server: server != self._lease_server)
 
         hints = []
+        answered = False
         for server in order:
             try:
                 rows = self.source.dhcp_leases(server)
@@ -555,10 +564,16 @@ class OPNsenseCollector:
                 if e.hint:
                     hints.append(e.hint)
                 continue
-            if self._lease_server != server:
-                logger.info('Reading DHCP leases from %s', server)
-            self._lease_server = server
-            return self._parse_leases(rows)
+            leases = self._parse_leases(rows)
+            if leases or len(order) == 1:
+                if self._lease_server != server:
+                    logger.info('Reading DHCP leases from %s', server)
+                self._lease_server = server
+                return leases
+            answered = True
+
+        if answered:
+            return []   # no server has a lease right now
 
         if 'dhcp_hint' not in self.updated:
             self.updated['dhcp_hint'] = time.time()
@@ -566,6 +581,17 @@ class OPNsenseCollector:
                            ': ' + '; or '.join(hints) if hints else '')
         self._lease_server = None
         return self.data.get('dhcp_leases', [])
+
+    def _update_reservations(self):
+        """{mac: hostname} of the lease server's reservations; kept when
+        they cannot be read."""
+        if not self._lease_server:
+            return
+        rows = self._call('dhcp_reservations', self._lease_server)
+        if rows is not None:
+            self._reservations = {
+                row['hw_address'].lower(): row['hostname'].strip()
+                for row in rows if row.get('hw_address') and (row.get('hostname') or '').strip()}
 
     @staticmethod
     def _parse_leases(rows):
@@ -663,8 +689,8 @@ class OPNsenseCollector:
         rdns = self._reverse_dns([h['ip'] for h in hosts.values()])
         names = {}
         for mac, entry in hosts.items():
-            name = self._client_name(rdns.get(entry['ip']), lease_names.get(mac),
-                                     arp_names.get(mac))
+            name = self._client_name(self._reservations.get(mac), lease_names.get(mac),
+                                     rdns.get(entry['ip']), arp_names.get(mac))
             name = name or self._names.get(mac)
             if name:
                 entry['hostname'] = names[mac] = name
@@ -672,21 +698,29 @@ class OPNsenseCollector:
 
         return list(hosts.values())
 
-    @staticmethod
-    def _client_name(*candidates):
-        """The first usable name, in order of precedence.
+    def _short_name(self, name):
+        """`name` without a trailing dot or the router's domain; None if
+        unusable."""
+        name = (name or '').strip().rstrip('.')
+        if not name or name in ('*', '?'):
+            return None
+        if self._domain:
+            if name.lower().endswith('.' + self._domain):
+                name = name[:-len(self._domain) - 1]
+        else:
+            name = name.split('.')[0]
+        return name or None
 
-        A UniFi switch names the clients in its mac_table by reverse DNS,
-        and the controller shows whichever name the last informing device
-        sent, so the router's DNS name comes first. Kea's lease name is the
-        same name lower-cased; OPNsense's ARP table carries the hostname
-        from ISC dhcpd's lease file, which goes stale once Kea takes over.
+    def _client_name(self, *candidates):
+        """The first usable name, without the router's domain.
+
+        UniFi switches and APs report the Host Name a client puts in its DHCP
+        requests, and the controller shows whichever device reported last,
+        so this aims for that name. A DHCP reservation's hostname is it as
+        entered; Kea's lease name is it lower-cased and qualified with the
+        router's domain; DNS and ARP name clients that have neither.
         """
-        for name in candidates:
-            name = (name or '').strip().rstrip('.')
-            if name and name not in ('*', '?'):
-                return name
-        return None
+        return next((n for n in map(self._short_name, candidates) if n), None)
 
     def _reverse_dns(self, addresses):
         """{ip: DNS name} for client addresses.

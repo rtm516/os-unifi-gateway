@@ -215,6 +215,32 @@ def test_unsupported_lease_server(local):
     assert local.dhcp_leases('kea')[0]['hostname'] == 'pi'
 
 
+def test_collector_reads_kea_next_to_an_empty_dnsmasq(local, gateway_config):
+    # Dnsmasq's lease action answers on every box, with no leases where Kea
+    # hands out addresses
+    local.runner.actions['dnsmasq list leases'] = {'records': []}
+    with patch('collectors.local_source.time.sleep'), \
+            patch('collectors.local_source.socket.gethostbyaddr', side_effect=OSError):
+        dc = OPNsenseCollector(gateway_config, local, wan_port='eth1', lan_port='eth0')
+    assert dc._lease_server == 'kea'
+    assert dc.data['dhcp_leases'][0]['hostname'] == 'pi'
+
+
+def test_kea_reservations_from_config(local, tmp_path):
+    kea = ('<Kea><dhcp4><reservations>'
+           '<reservation uuid="r1"><hw_address>00:00:5e:00:53:02</hw_address>'
+           '<ip_address>192.168.48.2</ip_address><hostname>Pi-Kitchen</hostname></reservation>'
+           '<reservation uuid="r2"><hw_address>00:00:5e:00:53:03</hw_address></reservation>'
+           '</reservations></dhcp4></Kea>')
+    (tmp_path / 'config.xml').write_text(CONFIG_XML.replace('</OPNsense>', kea + '</OPNsense>'))
+    local._xml = (None, None)
+    assert local.dhcp_reservations('kea') == [
+        {'hw_address': '00:00:5e:00:53:02', 'hostname': 'Pi-Kitchen'},
+        {'hw_address': '00:00:5e:00:53:03', 'hostname': ''},
+    ]
+    assert local.dhcp_reservations('dnsmasq') == []
+
+
 def test_flow_totals_passes_filter(local):
     assert local.flow_totals(2700, 3000, 'bridge0', 'in') == [{'src_addr': '192.168.48.2', 'total': 512}]
     assert local.runner.calls[-1][1:] == [

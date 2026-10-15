@@ -56,7 +56,8 @@ Earlier versions appeared as a UniFi Gateway Lite, on which the controller won't
 | WAN gateway, latency, uptime and downtime | routing table and gateway monitoring (dpinger) |
 | ISP name and logo | the WAN address's provider, from [Team Cymru](https://www.team-cymru.com/ip-asn-mapping)'s IP-to-ASN DNS service |
 | WAN DNS servers | Unbound's upstream servers, otherwise the WAN link's DNS servers |
-| Clients, hostnames, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
+| Clients, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
+| Client names | the hostname of the client's Kea reservation, else its DHCP lease name without the router's domain, else DNS or ARP |
 | Hostname, uptime, CPU, memory, load average | system information |
 | WAN speed test | measured by the daemon against the nearest fast [speedtest.net](https://www.speedtest.net) server, as UniFi gateways do |
 

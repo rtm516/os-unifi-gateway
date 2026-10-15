@@ -104,13 +104,13 @@ def test_active_leases(gateway_config, collector, device):
     site's IPV4_ACTIVE_LEASE_REPORTING feature."""
     from unifi_protocol import create_inform
     collector.data['dhcp_leases'] = [
-        {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'expire': 1792092112, 'hostname': 'pi'},
+        {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'expire': 1700000000, 'hostname': 'pi'},
         {'mac': 'aa:aa:aa:aa:aa:09', 'ip': '192.168.48.9'},
     ]
     payload = json.loads(create_inform(gateway_config, collector, device))
     assert payload['ipv4_active_leases'] == [
         {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'hostname': 'pi',
-         'leaseExpiry': 1792092112},
+         'leaseExpiry': 1700000000},
         {'mac': 'aa:aa:aa:aa:aa:09', 'ip': '192.168.48.9'},
     ]
     assert payload['fw2_caps'] & 2
