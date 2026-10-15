@@ -15,9 +15,9 @@ OUT_DIR="${2:-$ROOT_DIR/dist}"
 NAME="os-unifi-gateway"
 PREFIX="/usr/local"
 APP_DIR="$PREFIX/opnsense/scripts/unifigateway"
-WWW="https://github.com/rtm516/unifi-gateway"
+WWW="https://github.com/rtm516/os-unifi-gateway"
 MAINTAINER="rtm516@users.noreply.github.com"
-COMMENT="Report OPNsense to a UniFi Network controller as a UniFi gateway"
+COMMENT="Show OPNsense in UniFi Network as a UniFi gateway"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

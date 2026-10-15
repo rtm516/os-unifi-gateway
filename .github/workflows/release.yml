@@ -122,6 +122,8 @@ jobs:
             git -C repo checkout --orphan pkg-repo
             git -C repo rm -rfq .
           fi
+          # only the latest release: OPNsense lists every version the repo holds
+          rm -f repo/All/*.pkg
 
       - uses: actions/download-artifact@v4
         with:
@@ -141,8 +143,6 @@ jobs:
 
       - name: Rebuild repository catalogue
         run: |
-          # keep the three newest releases
-          ls -1t repo/All/os-unifi-gateway-*.pkg | tail -n +4 | xargs -r rm -f
           cp plugin/build-repo.sh /tmp/build-repo.sh
           docker run --rm -v "$PWD/repo:/repo" -v /tmp/build-repo.sh:/build-repo.sh \
             unifi-gateway-pkg sh /build-repo.sh /repo \

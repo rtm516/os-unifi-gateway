@@ -1,9 +1,4 @@
-Makes OPNsense appear in a UniFi Network controller as a UniFi gateway
-(a UniFi Gateway Pro), so the controller shows the router's WAN and
-LAN status, traffic, clients and topology next to your UniFi access points
-and switches.
+The controller shows the firewall's WAN and LAN status, traffic, clients
+and speed test results alongside your UniFi access points and switches.
 
-The daemon runs on the firewall itself and reads interface, client, DHCP,
-DNS and system data directly from OPNsense; it needs no API key.
-
-WWW: https://github.com/rtm516/unifi-gateway
+WWW: https://github.com/rtm516/os-unifi-gateway
