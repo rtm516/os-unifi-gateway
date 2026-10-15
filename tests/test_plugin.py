@@ -101,3 +101,13 @@ def test_env_names_are_understood_by_daemon():
         known = set(gateway.ENV_OVERRIDES) | {'UNIFI_ADOPT_URL'}
         sys.modules.pop('unifi_gateway', None)
     assert names <= known, names - known
+
+
+def test_package_bundles_every_module():
+    """build-pkg.sh lists the daemon's modules by name; a missing one only
+    shows up as an ImportError on the router."""
+    root = os.path.join(PLUGIN, '..')
+    with open(os.path.join(PLUGIN, 'build-pkg.sh')) as f:
+        bundled = set(re.search(r'for f in ([^;]+); do', f.read()).group(1).split())
+    modules = {name for name in os.listdir(root) if name.endswith('.py')}
+    assert modules <= bundled

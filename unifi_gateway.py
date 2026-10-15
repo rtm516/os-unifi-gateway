@@ -8,7 +8,6 @@ import logging.handlers
 import os
 import signal
 import socket
-import subprocess
 import sys
 import time
 import urllib.request
@@ -17,6 +16,8 @@ import urllib.error
 from collectors import SourceError, create_collector
 from daemon import Daemon
 from devices import Device
+from isp import IspInfo
+from speedtest import SpeedTest
 from unifi_protocol import (
     create_broadcast_message, create_inform, encode_inform, decode_inform,
 )
@@ -90,6 +91,10 @@ ENV_OVERRIDES = {
 # setparam keys kept out of the config file. system_cfg is the full UDAPI
 # configuration a UXG would apply (including the controller's site token and
 # RADIUS secrets); nothing here uses it.
+# Inform this often while a speed test runs, so the controller can show its
+# progress live instead of one update per normal interval.
+SPEEDTEST_INFORM_INTERVAL = 2
+
 NOT_PERSISTED_SETPARAM_KEYS = {'_type', 'server_time_in_utc', 'blocked_sta', 'system_cfg'}
 
 
@@ -153,6 +158,10 @@ class UnifiGateway(Daemon):
                 self._set_runtime(section, option, os.environ[env])
 
         self.device = Device(self.config)
+        self.speedtest = SpeedTest(self.config.get(
+            'gateway', 'speedtest_file',
+            fallback=os.path.join(os.path.dirname(CONFIG_FILE), 'speedtest.json')))
+        self.isp = IspInfo()
         self.datacollector = None
         self._unhandled = {}
         self._adopt_logged = False
@@ -287,13 +296,12 @@ class UnifiGateway(Daemon):
         logger.info(
             'Device adopted, starting inform loop (interval=%ds)', self.interval
         )
+        self._check_adopted_model()
 
         while self.running:
             try:
                 self.datacollector.update()
-                response = self._send_inform(
-                    create_inform(self.config, self.datacollector, self.device)
-                )
+                response = self._send_inform(self._create_inform())
                 logger.debug(
                     'Received %s from controller', response.get('_type', 'unknown')
                 )
@@ -301,7 +309,7 @@ class UnifiGateway(Daemon):
             except Exception as e:
                 logger.error('Error in inform loop: %s', e, exc_info=True)
                 self.interval = min(self.interval * 2, 60)
-            time.sleep(self.interval)
+            time.sleep(self._inform_delay())
 
         logger.info('Shutting down gracefully')
 
@@ -329,8 +337,33 @@ class UnifiGateway(Daemon):
             sys.exit(1)
         self._set_runtime('gateway', 'is_adopted', 'True')
         self._set_runtime('gateway', 'url', self.config.get('gateway', 'url', fallback=''))
-        payload = create_inform(self.config, self.datacollector, self.device)
+        payload = self._create_inform()
         print(json.dumps(json.loads(payload), indent=2))
+
+    def _check_adopted_model(self):
+        """The controller keeps the model a device was adopted as, so a
+        gateway adopted by an older version (which emulated the UXG Lite)
+        stays a Lite, with the Lite's port layout, until it's re-adopted."""
+        adopted = self.config.get('gateway', 'adopted_model', fallback='UXG')
+        if adopted != self.device.model:
+            logger.warning(
+                'This gateway was adopted as a %s but now reports itself as a %s: '
+                'forget it in the UniFi controller and adopt it again, or ports, '
+                'clients and the speed test will be wrong',
+                adopted, self.device.display,
+            )
+
+    def _inform_delay(self):
+        if self.speedtest.active:
+            return min(self.interval, SPEEDTEST_INFORM_INTERVAL)
+        return self.interval
+
+    def _create_inform(self):
+        data = self.datacollector.data
+        data['speedtest'] = self.speedtest.status()
+        data['isp'] = self.isp.current(
+            data.get('ip', {}).get(self.device.wan_port, {}).get('address'))
+        return create_inform(self.config, self.datacollector, self.device)
 
     def _handle_signal(self, signum, frame):
         logger.info('Received signal %d, shutting down', signum)
@@ -381,6 +414,7 @@ class UnifiGateway(Daemon):
             logger.critical('Controller requested device reset')
             self.config.set('gateway', 'is_adopted', 'False')
             self.config.remove_option('gateway', 'key')
+            self.config.remove_option('gateway', 'adopted_model')
             self.config.set('gateway', 'use_aes_gcm', 'False')
             self._save_config()
             self.running = False
@@ -407,7 +441,8 @@ class UnifiGateway(Daemon):
         logger.info('Received command: %s', cmd)
 
         if cmd == 'speed-test':
-            self._run_speedtest()
+            self.speedtest.start(down_duration=response.get('down_duration'),
+                                 up_duration=response.get('up_duration'))
         elif cmd == 'set-locate':
             self.config.set('gateway', 'locating', 'True')
             logger.info('Locate mode enabled')
@@ -417,31 +452,6 @@ class UnifiGateway(Daemon):
         else:
             logger.warning('Unknown command: %s', cmd)
             self._record_unhandled('command', cmd, response)
-
-    def _run_speedtest(self):
-        logger.info('Running speed test...')
-        try:
-            result = subprocess.run(
-                ['speedtest-cli', '--json'],
-                capture_output=True, timeout=120,
-            )
-            if result.returncode == 0:
-                speedtest_file = './speedtest.json'
-                if self.config.has_option('gateway', 'speedtest_file'):
-                    speedtest_file = self.config.get('gateway', 'speedtest_file')
-                with open(speedtest_file, 'w') as f:
-                    f.write(result.stdout.decode('utf-8'))
-                logger.info('Speed test complete, results saved')
-            else:
-                logger.warning(
-                    'Speed test failed: %s', result.stderr.decode('utf-8')
-                )
-        except FileNotFoundError:
-            logger.warning('speedtest-cli not installed, cannot run speed test')
-        except subprocess.TimeoutExpired:
-            logger.warning('Speed test timed out')
-        except Exception as e:
-            logger.warning('Speed test error: %s', e)
 
     def _send_broadcast(self, broadcast_index):
         try:
@@ -473,9 +483,7 @@ class UnifiGateway(Daemon):
             self.config.set('gateway', 'key', key)
         self._save_config()
 
-        response = self._send_inform(
-            create_inform(self.config, self.datacollector, self.device)
-        )
+        response = self._send_inform(self._create_inform())
         logger.debug('Received %s from controller', response)
 
         if response['_type'] == 'httperror':
@@ -509,6 +517,7 @@ class UnifiGateway(Daemon):
             if not self.config.getboolean('gateway', 'is_adopted'):
                 logger.info('setparam received, device now adopted')
                 self.config.set('gateway', 'is_adopted', 'True')
+                self.config.set('gateway', 'adopted_model', self.device.model)
 
             for k, value in response.items():
                 if k == 'mgmt_cfg':

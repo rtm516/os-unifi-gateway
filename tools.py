@@ -58,11 +58,12 @@ def get_if_table(data, ports, uptime=0):
                 if_entry['gateways'] = [data['ip'][iface]['gateway']]
             if_entry['nameservers'] = data.get('nameservers', [])
             if_entry['latency'] = data.get('latency', 0)
-            if_entry['speedtest_lastrun'] = data.get('speedtest', {}).get('lastrun', 0)
-            if_entry['speedtest_ping'] = data.get('speedtest', {}).get('ping', 0)
-            if_entry['speedtest_status'] = 'Idle'
-            if_entry['xput_down'] = data.get('speedtest', {}).get('download', 0)
-            if_entry['xput_up'] = data.get('speedtest', {}).get('upload', 0)
+            speedtest = data.get('speedtest') or {}
+            if_entry['speedtest_lastrun'] = speedtest.get('rundate', 0)
+            if_entry['speedtest_ping'] = speedtest.get('latency', 0)
+            if_entry['speedtest_status'] = 'Running' if speedtest.get('status_summary') == 1 else 'Idle'
+            if_entry['xput_down'] = speedtest.get('xput_download', 0)
+            if_entry['xput_up'] = speedtest.get('xput_upload', 0)
         if_table.append(if_entry)
     return if_table
 

@@ -59,10 +59,10 @@ def test_uxg_fields(gateway_config, collector, device):
     from unifi_protocol import create_inform
     payload = json.loads(create_inform(gateway_config, collector, device))
     assert payload['type'] == 'uxg'
-    assert payload['model_display'] == 'UniFi Gateway Lite'
+    assert (payload['model'], payload['model_display']) == ('UXGPRO', 'UniFi Gateway Pro')
     assert payload['num_port'] == 2
     roles = {p['ifname']: p['role'] for p in payload['ethernet_overrides']}
-    assert roles == {'eth0': 'lan', 'eth1': 'wan'}
+    assert roles == {'eth0': 'wan', 'eth1': 'lan'}
     assert [p['port_idx'] for p in payload['port_table']] == [1, 2]
 
 
@@ -73,15 +73,15 @@ def test_uxg_clients_in_lan_port_mac_table(gateway_config, collector, device):
     payload = json.loads(create_inform(gateway_config, collector, device))
     lan_ports = {o['ifname'] for o in payload['ethernet_overrides'] if o['networkgroup'] == 'LAN'}
     ports = {p['name']: p for p in payload['port_table']}
-    assert lan_ports == {'eth0'}
-    lan = ports['eth0']
+    assert lan_ports == {'eth1'}
+    lan = ports['eth1']
     assert lan['up'] is True
     assert sorted(h['mac'] for h in lan['mac_table']) == \
         sorted(h['mac'] for h in collector.data['host_table'])
     assert len(lan['mac_table']) == 3
     # no vlan means the untagged LAN; anything else would hide the clients
     assert all(h.get('vlan', 1) == 1 for h in lan['mac_table'])
-    assert 'mac_table' not in ports['eth1']
+    assert 'mac_table' not in ports['eth0']
 
 
 def test_hostname_override(gateway_config, collector, device):
@@ -120,3 +120,58 @@ def test_broadcast_message(gateway_config, collector, device):
     from unifi_protocol import create_broadcast_message
     message = create_broadcast_message(gateway_config, 1, device, collector.uptime())
     assert bytes([0x00, 0x00, 0x5e, 0x00, 0x53, 0x01]) in message
+
+
+def test_speedtest_status(gateway_config, collector, device):
+    """Absent until a test has run (the controller would store an idle status
+    as a result); the WAN port is named so the result is filed under the
+    right WAN."""
+    from speedtest import RUNNING, idle_status
+    from unifi_protocol import create_inform
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    assert 'speedtest-status' not in payload
+    collector.data['speedtest'] = idle_status()
+    assert 'speedtest-status' not in json.loads(create_inform(gateway_config, collector, device))
+
+    collector.data['speedtest'] = dict(idle_status(), status_summary=RUNNING, rundate=1700000000,
+                                       latency=4, xput_download=912.35, xput_upload=0)
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    status = payload['speedtest-status']
+    assert (status['status_summary'], status['xput_download']) == (RUNNING, 912.35)
+    assert status['interface_name'] == device.wan_port
+    wan = [i for i in payload['if_table'] if i['name'] == device.wan_port][0]
+    assert wan['speedtest_status'] == 'Running'
+    assert (wan['speedtest_lastrun'], wan['speedtest_ping']) == (1700000000, 4)
+    assert (wan['xput_down'], wan['xput_up']) == (912.35, 0)
+
+
+def test_uptime_stats(gateway_config, collector, device):
+    """A UXG's WAN latency and availability reach the controller only through
+    uptime_stats.WAN.alerting_monitors."""
+    from unifi_protocol import create_inform
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    wan = payload['uptime_stats']['WAN']
+    assert (wan['availability'], wan['latency_average'], wan['downtime']) == (100.0, 8, 0)
+    assert wan['uptime'] == payload['uptime']
+    check = {'availability': 100.0, 'latency_average': 8, 'target': '81.2.3.1', 'type': 'icmp'}
+    assert wan['monitors'] == wan['alerting_monitors'] == [check]
+
+    collector.data['wan_monitor'].update(loss=12.5)
+    wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
+    assert wan['alerting_monitors'][0]['availability'] == 87.5
+    collector.data['wan_monitor'].update(down=True)
+    wan = json.loads(create_inform(gateway_config, collector, device))['uptime_stats']['WAN']
+    assert wan['availability'] == 0.0
+
+    del collector.data['wan_monitor']  # gateway status not readable
+    assert 'uptime_stats' not in json.loads(create_inform(gateway_config, collector, device))
+
+
+def test_geo_info(gateway_config, collector, device):
+    """The controller shows the ISP from geo_info, keyed by WAN group."""
+    from unifi_protocol import create_inform
+    assert 'geo_info' not in json.loads(create_inform(gateway_config, collector, device))
+    collector.data['isp'] = {'isp_name': 'Example Broadband', 'isp_organization': 'Example Broadband',
+                             'asn': 64500, 'address': '81.2.3.4'}
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    assert payload['geo_info'] == {'WAN': collector.data['isp']}

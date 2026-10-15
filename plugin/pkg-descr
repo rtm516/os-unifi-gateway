@@ -1,5 +1,5 @@
 Makes OPNsense appear in a UniFi Network controller as a UniFi gateway
-(a UniFi Gateway Lite), so the controller shows the router's WAN and
+(a UniFi Gateway Pro), so the controller shows the router's WAN and
 LAN status, traffic, clients and topology next to your UniFi access points
 and switches.
 

@@ -2,7 +2,7 @@
 
 An OPNsense plugin that makes your firewall appear in a UniFi Network controller as a UniFi gateway. The controller then shows the router's WAN and LAN status, traffic, clients and topology alongside your UniFi access points and switches, just as it would for a Ubiquiti gateway.
 
-It appears as a **UniFi Gateway Lite (UXG)** running Ubiquiti's latest firmware, so the controller never offers an upgrade.
+It appears as a **UniFi Gateway Pro (UXG-Pro)** running Ubiquiti's latest firmware, so the controller never offers an upgrade. The WAN is reported on the Pro's first port and the LAN on its second.
 
 This project started as a fork of [amd989/unifi-gateway](https://github.com/amd989/unifi-gateway), which did the original work on the inform protocol, adoption flow and payloads that this plugin builds on.
 
@@ -43,6 +43,10 @@ The page shows the adoption state, and **Services > UniFi Gateway > Log File** s
 
 No API key is needed.
 
+### Upgrading from a version that emulated the UXG Lite
+
+Earlier versions appeared as a UniFi Gateway Lite, on which the controller won't run speed tests. The controller keeps the model a gateway was adopted as, so after upgrading, **forget the gateway in the UniFi controller and adopt it again**. Until then it stays a Gateway Lite with its WAN and LAN ports swapped, and the log says so at every start. Forgetting resets the plugin's adoption; the gateway then shows up as a pending **UniFi Gateway Pro**, ready to adopt.
+
 ## What gets reported
 
 | Controller shows | Comes from |
@@ -50,11 +54,15 @@ No API key is needed.
 | WAN/LAN addresses, MACs, link state, MTU, speed | interface status |
 | Traffic counters and rates | interface statistics |
 | WAN gateway and latency | routing table and gateway monitoring (dpinger) |
+| ISP name and logo | the WAN address's provider, looked up at [ipinfo.io](https://ipinfo.io) |
 | WAN DNS servers | Unbound's upstream servers, otherwise the WAN link's DNS servers |
 | Clients, hostnames, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
 | Hostname, uptime, CPU, memory | system information |
+| WAN speed test | measured by the daemon against the nearest fast [speedtest.net](https://www.speedtest.net) server, as UniFi gateways do |
 
 Per-client traffic needs **Reporting > NetFlow** capturing the LAN interface.
+
+The speed test (**ISP Speed Test** on the dashboard, or the controller's schedule) needs nothing extra installed, and shows its progress live. It runs where the daemon runs: on the plugin it measures the firewall's WAN link, but in Docker it measures the Docker host's connection, not the router's. It picks the lowest-latency of the nearest speedtest.net servers, then measures each direction for at least 10 seconds over 8 connections, so results should match speedtest.net. The last result is kept in `speedtest.json` next to the config file.
 
 ## Testing with Docker
 
@@ -140,6 +148,7 @@ verify_ssl = False
 [gateway]
 # firmware = latest
 # hostname = my-gateway
+# speedtest_file = /path/to/speedtest.json
 ```
 
 Adoption state is added to the file automatically; don't edit it.
@@ -157,6 +166,8 @@ UNIFI_GW_AES_BACKEND=openssl python -m pytest   # the AES path the plugin uses o
 | `unifi_gateway.py` | Entry point: adoption, inform loop, controller responses, config handling |
 | `unifi_protocol.py` | Inform packets (TNBU header, AES-CBC/GCM, zlib/snappy) and payloads |
 | `devices.py` | Emulated model and latest-firmware lookup |
+| `speedtest.py` | The controller's WAN speed test, against speedtest.net servers |
+| `isp.py` | Looks up the WAN's ISP for the controller |
 | `aes.py` | AES via pycryptodome, or OpenSSL `libcrypto` through ctypes when that isn't installed (as on OPNsense) |
 | `collectors/opnsense.py` | Turns router state into what the payload needs |
 | `collectors/source.py` | The interface between the collector and the router |

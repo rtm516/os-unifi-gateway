@@ -152,7 +152,6 @@ def gateway_config():
             'is_adopted': 'True',
             'use_aes_gcm': 'False',
             'url': 'http://192.0.2.10:8080/inform',
-            'speedtest_file': os.path.join(os.path.dirname(__file__), 'no-such-speedtest.json'),
         },
         'provisioned': {},
     })

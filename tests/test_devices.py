@@ -8,7 +8,7 @@ from unittest.mock import patch
 from devices import Device, fetch_latest_firmware, parse_firmware_version
 
 FW_RESPONSE = {'_embedded': {'firmware': [{
-    'version': 'v5.1.26+33914', 'platform': 'UXG', 'channel': 'release',
+    'version': 'v5.1.26+33914', 'platform': 'UXGPROV2', 'channel': 'release',
 }]}}
 
 
@@ -25,14 +25,16 @@ def test_fetch_queries_platform():
         seen['url'] = request.full_url
         return io.BytesIO(json.dumps(FW_RESPONSE).encode())
     with patch('urllib.request.urlopen', urlopen):
-        assert fetch_latest_firmware('UXG') == '5.1.26.33914'
-    assert 'filter=eq~~platform~~UXG' in seen['url']
+        assert fetch_latest_firmware('UXGPROV2') == '5.1.26.33914'
+    assert 'filter=eq~~platform~~UXGPROV2' in seen['url']
     assert 'filter=eq~~channel~~release' in seen['url']
 
 
-def test_default_is_uxg_lite(gateway_config):
+def test_emulates_uxg_pro(gateway_config):
+    """Not the UXG Lite: the controller refuses speed tests on it."""
     device = Device(gateway_config)
-    assert (device.model, device.wan_port, device.lan_port) == ('UXG', 'eth1', 'eth0')
+    assert (device.model, device.display) == ('UXGPRO', 'UniFi Gateway Pro')
+    assert (device.wan_port, device.lan_port) == ('eth0', 'eth1')
 
 
 def test_reports_latest_and_caches(gateway_config):
@@ -40,7 +42,7 @@ def test_reports_latest_and_caches(gateway_config):
     with patch('devices.fetch_latest_firmware', return_value='5.1.26.33914') as fetch:
         assert device.firmware() == '5.1.26.33914'
         assert device.firmware() == '5.1.26.33914'
-    fetch.assert_called_once_with('UXG')
+    fetch.assert_called_once_with('UXGPROV2')
 
 
 def test_refresh_looks_up_again(gateway_config):

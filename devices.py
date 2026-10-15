@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 """The UniFi gateway we impersonate, and its latest firmware.
 
-A UniFi Gateway Lite (UXG): supported by current UniFi Network releases,
-unlike the USG line, which can only be adopted up to UniFi Network 10.6. The
-controller ignores model codes it doesn't know, so it has to be a real one.
+A UniFi Gateway Pro (UXGPRO) on UniFi OS firmware: supported by current
+UniFi Network releases, unlike the USG line, which can only be adopted up to
+UniFi Network 10.6. Not the Gateway Lite (UXG): the controller refuses to run
+speed tests on that model (and on the USG and UniFi Express). The controller
+ignores model codes it doesn't know, so it has to be a real one.
+
+The Pro's ports, as the controller's device database lays them out: eth0 WAN
+and eth1 LAN (1 GbE), eth2 WAN2 and eth3 LAN2 (10G SFP+). We report the first
+two.
 """
 import json
 import logging
@@ -50,12 +56,14 @@ class Device:
     pins `firmware` to a fixed version.
     """
 
-    model = 'UXG'
-    display = 'UniFi Gateway Lite'
-    fw_platform = 'UXG'
+    model = 'UXGPRO'
+    display = 'UniFi Gateway Pro'
+    # UXGPRO is the legacy 1.x firmware line; the controller treats a UXGPRO
+    # reporting 1.13.6 or later as the UniFi OS model, UXGPROV2
+    fw_platform = 'UXGPROV2'
     fallback_firmware = '5.1.26.33914'
-    wan_port = 'eth1'
-    lan_port = 'eth0'
+    wan_port = 'eth0'
+    lan_port = 'eth1'
 
     def __init__(self, config):
         self.config = config

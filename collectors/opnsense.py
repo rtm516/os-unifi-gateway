@@ -6,9 +6,7 @@ running off-box, configd when running on the router as a plugin. Only the
 interfaces are required; everything else degrades gracefully when the
 source cannot provide it.
 """
-import json
 import logging
-import os
 import re
 import time
 
@@ -55,6 +53,12 @@ def parse_media_duplex(media):
     if 'half-duplex' in media:
         return False
     return None
+
+
+def _leading_number(text):
+    """4.1 from '4.1 ms', 0.0 from '0.0 %'; None for '~' or nothing."""
+    match = re.match(r'\s*(\d+(?:\.\d+)?)', str(text or ''))
+    return float(match.group(1)) if match else None
 
 
 def is_ppp(row):
@@ -215,7 +219,7 @@ class OPNsenseCollector:
         if self._due('dhcp_leases', 60):
             self.data['dhcp_leases'] = self._get_dhcp_leases()
         if self._due('latency', 60):
-            self.data['latency'] = self._get_latency()
+            self._update_wan_monitor()
         if self._due('nameservers', 300):
             self._upstream_dns = self._get_upstream_dns()
         self.data['nameservers'] = self._upstream_dns or self._wan_dns
@@ -223,7 +227,6 @@ class OPNsenseCollector:
             self._update_client_traffic()
             self.data['host_table'] = self._build_host_table()
 
-        self.data['speedtest'] = self._get_speedtest_results()
         self.updated['general'] = time.time()
 
     def _due(self, key, interval):
@@ -460,7 +463,9 @@ class OPNsenseCollector:
 
     # ── Latency ──────────────────────────────────────────────────────────
 
-    def _get_latency(self):
+    def _update_wan_monitor(self):
+        """Latency and loss gateway monitoring (dpinger) measures for the WAN
+        gateway: `latency` in ms, and `wan_monitor` with the details."""
         items = self._call('gateway_status') or []
         wan_gw = self.data['ip'].get(self.wan_port, {}).get('gateway')
         wan_dev = self.wan_device
@@ -468,11 +473,20 @@ class OPNsenseCollector:
         def matches(item):
             return item.get('address') == wan_gw or item.get('interface') == wan_dev
 
+        self.data.setdefault('latency', 0)
         for item in sorted(items, key=lambda i: not matches(i)):
-            match = re.match(r'\s*([\d.]+)', str(item.get('delay', '')))
-            if match:
-                return float(match.group(1))
-        return self.data.get('latency', 0)
+            delay = _leading_number(item.get('delay'))
+            if delay is None:
+                continue
+            target = item.get('monitor', '')
+            self.data['latency'] = delay
+            self.data['wan_monitor'] = {
+                'latency': delay,
+                'loss': _leading_number(item.get('loss')) or 0.0,
+                'target': target if re.match(r'^[\d.:a-fA-F]+$', target) else item.get('address', ''),
+                'down': item.get('status') == 'down',
+            }
+            return
 
     # ── DHCP leases ──────────────────────────────────────────────────────
 
@@ -589,21 +603,3 @@ class OPNsenseCollector:
                 hosts[lease['mac']]['hostname'] = lease['hostname']
 
         return list(hosts.values())
-
-    # ── Speedtest ────────────────────────────────────────────────────────
-
-    def _get_speedtest_results(self):
-        noresult = {'lastrun': 0, 'ping': 0, 'upload': 0, 'download': 0}
-        results_file = self.config.get('gateway', 'speedtest_file', fallback='./speedtest.json')
-        try:
-            ts = os.path.getmtime(results_file)
-            with open(results_file) as f:
-                sp = json.load(f)
-            return {
-                'lastrun': int(ts),
-                'ping': sp.get('ping', 0),
-                'upload': sp.get('upload', 0) / 1024 / 1024,
-                'download': sp.get('download', 0) / 1024 / 1024,
-            }
-        except (IOError, OSError, ValueError, KeyError, TypeError):
-            return noresult

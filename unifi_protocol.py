@@ -167,7 +167,29 @@ def _port_idx(port):
     return int(port['ifname'].replace('eth', '')) + 1
 
 
-def _uxg_fields(dc, ports):
+def _uptime_stats(dc, uptime):
+    """WAN health as a UniFi OS gateway reports it. The controller takes a
+    UXG's WAN latency and availability only from here (the first of
+    `alerting_monitors`), not from if_table, and shows the ISP as offline
+    without them."""
+    monitor = dc.data.get('wan_monitor')
+    if not monitor:
+        return None
+    availability = 0.0 if monitor['down'] else round(max(0.0, 100.0 - monitor['loss']), 1)
+    latency = int(round(monitor['latency']))
+    check = {'availability': availability, 'latency_average': latency,
+             'target': monitor['target'], 'type': 'icmp'}
+    return {'WAN': {
+        'availability': availability,
+        'latency_average': latency,
+        'uptime': uptime,
+        'downtime': 0,
+        'monitors': [check],
+        'alerting_monitors': [check],
+    }}
+
+
+def _uxg_fields(dc, ports, uptime=0):
     """Fields a UXG reports on top of the USG-style tables."""
     port_table, assignments = [], []
     for port in ports:
@@ -206,7 +228,7 @@ def _uxg_fields(dc, ports):
             'role': port['type'].lower(),
             'enable': True,
         })
-    return {
+    fields = {
         'type': 'uxg',
         'adopted': True,
         'num_port': len(ports),
@@ -218,6 +240,13 @@ def _uxg_fields(dc, ports):
         'gw_caps': {},
         'time_ms': int(time.time() * 1000),
     }
+    uptime_stats = _uptime_stats(dc, uptime)
+    if uptime_stats:
+        fields['uptime_stats'] = uptime_stats
+    if dc.data.get('isp'):
+        # the controller shows the ISP from here, per WAN group
+        fields['geo_info'] = {'WAN': dict(dc.data['isp'])}
+    return fields
 
 
 def _complete_payload(config, dc, device):
@@ -239,9 +268,6 @@ def _complete_payload(config, dc, device):
         if 'hostname' in lease:
             entry['hostname'] = lease['hostname']
         active_leases.append(entry)
-
-    speedtest = dc.data.get('speedtest', {})
-    has_speedtest = speedtest.get('download', 0) > 0
 
     payload = {
         'bootrom_version': 'unknown',
@@ -282,17 +308,6 @@ def _complete_payload(config, dc, device):
         'uplink': wan_if,
         'uptime': uptime,
         'pfor-stats': [],
-        'speedtest-status': {
-            'latency': int(speedtest.get('ping', 0)),
-            'rundate': speedtest.get('lastrun', 0),
-            'runtime': 0,
-            'status_download': 2 if has_speedtest else 0,
-            'status_ping': 2 if speedtest.get('ping', 0) > 0 else 0,
-            'status_summary': 2 if has_speedtest else 0,
-            'status_upload': 2 if has_speedtest else 0,
-            'xput_download': speedtest.get('download', 0),
-            'xput_upload': speedtest.get('upload', 0),
-        },
         'ddns-status': {'dyndns': []},
         'system-stats': {
             'cpu': system_stats.get('cpu', '0'),
@@ -303,7 +318,12 @@ def _complete_payload(config, dc, device):
         'network_table': get_network_table(dc.data, ports),
         'if_table': get_if_table(dc.data, ports, uptime),
     }
-    payload.update(_uxg_fields(dc, ports))
+    payload.update(_uxg_fields(dc, ports, uptime))
+    speedtest = dc.data.get('speedtest') or {}
+    if speedtest.get('rundate'):
+        # Only once a test has run: the controller files every finished
+        # status as a result, so an idle one becomes a 0 Mbps test from 1970.
+        payload['speedtest-status'] = dict(speedtest, interface_name=wan_if)
     for network in payload['network_table']:
         port = [p for p in ports if p['ifname'] == network['name']][0]
         network.update({

@@ -331,6 +331,20 @@ class TestSystem:
     def test_latency_from_wan_gateway(self, gateway_config, fake_api):
         dc = make(gateway_config, fake_api)
         assert dc.data['latency'] == 8.4
+        assert dc.data['wan_monitor'] == {
+            'latency': 8.4, 'loss': 0.0, 'target': '81.2.3.1', 'down': False}
+
+    def test_wan_monitor_target_and_loss(self, gateway_config):
+        api = FakeAPI()
+        api.responses['/api/routes/gateway/status']['items'] = [
+            {'name': 'VPN', 'address': '~', 'status': 'none', 'delay': '~', 'loss': '~', 'monitor': '~'},
+            {'name': 'WAN_PPPOE', 'address': '81.2.3.1', 'status': 'down',
+             'delay': '12.5 ms', 'loss': '35.0 %', 'monitor': '1.1.1.1'},
+        ]
+        dc = make(gateway_config, api)
+        assert dc.data['latency'] == 12.5
+        assert dc.data['wan_monitor'] == {
+            'latency': 12.5, 'loss': 35.0, 'target': '1.1.1.1', 'down': True}
 
     def test_optional_endpoints_degrade(self, gateway_config):
         api = FakeAPI(forbidden={
@@ -342,6 +356,7 @@ class TestSystem:
         assert 'uptime' not in dc.data
         assert dc.data['system_stats'] == {'cpu': '0', 'mem': '0'}
         assert dc.data['latency'] == 0
+        assert 'wan_monitor' not in dc.data
         assert dc.data['dhcp_leases'] == []
         assert dc.data['host_table'] == []
 
@@ -422,13 +437,3 @@ class TestClients:
         flow_calls = [c for c in fake_api.calls if 'networkinsight' in c]
         assert '/FlowSourceAddrTotals/3000/3300/' in flow_calls[-1]
 
-
-class TestSpeedtest:
-
-    def test_reads_results_file(self, gateway_config, fake_api, tmp_path):
-        results = tmp_path / 'speedtest.json'
-        results.write_text(json.dumps({'ping': 9, 'download': 100 * 1024 * 1024, 'upload': 0}))
-        gateway_config.set('gateway', 'speedtest_file', str(results))
-        dc = make(gateway_config, fake_api)
-        assert dc.data['speedtest']['download'] == 100
-        assert dc.data['speedtest']['ping'] == 9
