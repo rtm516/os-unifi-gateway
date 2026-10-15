@@ -8,9 +8,11 @@ key is needed. Output is reshaped to match the API responses (see source.py).
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from .source import Source, SourceError
 
@@ -232,6 +234,23 @@ class LocalSource(Source):
         if server not in LEASE_ACTIONS:
             raise SourceError('dhcp leases', None, '%s is not supported on-box' % server)
         return self._action(*LEASE_ACTIONS[server]).get('records', [])
+
+    def reverse_dns(self, addresses):
+        def lookup(address):
+            try:
+                return socket.gethostbyaddr(address)[0]
+            except (OSError, UnicodeError):
+                return None
+
+        # gethostbyaddr has no timeout, so a slow resolver only costs the
+        # names that miss the deadline, not the inform
+        pool = ThreadPoolExecutor(max_workers=8)
+        try:
+            futures = {pool.submit(lookup, a): a for a in set(addresses)}
+            done, _ = wait(futures, timeout=10)
+            return {futures[f]: f.result() for f in done if f.result()}
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def gateway_status(self):
         status = self._action('interface', 'gateways', 'status')

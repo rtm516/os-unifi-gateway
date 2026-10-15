@@ -220,8 +220,18 @@ def test_flow_totals_passes_filter(local):
         'src_addr', 'octets', 'if=bridge0,direction=in', '1000']
 
 
+def test_reverse_dns_skips_unresolved(local):
+    def gethostbyaddr(address):
+        if address == '192.168.48.2':
+            return ('pi.example.net', [], [address])
+        raise OSError('host not found')
+    with patch('collectors.local_source.socket.gethostbyaddr', gethostbyaddr):
+        assert local.reverse_dns(['192.168.48.2', '192.168.48.9']) == {'192.168.48.2': 'pi.example.net'}
+
+
 def test_collector_runs_on_local_source(local, gateway_config):
-    with patch('collectors.local_source.time.sleep'):
+    with patch('collectors.local_source.time.sleep'), \
+            patch('collectors.local_source.socket.gethostbyaddr', side_effect=OSError):
         dc = OPNsenseCollector(gateway_config, local, wan_port='eth1', lan_port='eth0')
     assert dc.lan_ip == '192.168.48.1' and dc.lan_mac == '00:00:5e:00:53:01'
     assert dc.data['ip']['eth1']['gateway'] == '81.2.3.1'

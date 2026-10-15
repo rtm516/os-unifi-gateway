@@ -84,6 +84,25 @@ def test_uxg_clients_in_lan_port_mac_table(gateway_config, collector, device):
     assert 'mac_table' not in ports['eth0']
 
 
+def test_active_leases(gateway_config, collector, device):
+    """The controller keeps ipv4_active_leases (a list) per gateway and maps
+    each mac to its leaseExpiry in epoch seconds; fw2_caps bit 2 turns on the
+    site's IPV4_ACTIVE_LEASE_REPORTING feature."""
+    from unifi_protocol import create_inform
+    collector.data['dhcp_leases'] = [
+        {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'expire': 1792092112, 'hostname': 'pi'},
+        {'mac': 'aa:aa:aa:aa:aa:09', 'ip': '192.168.48.9'},
+    ]
+    payload = json.loads(create_inform(gateway_config, collector, device))
+    assert payload['ipv4_active_leases'] == [
+        {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'hostname': 'pi',
+         'leaseExpiry': 1792092112},
+        {'mac': 'aa:aa:aa:aa:aa:09', 'ip': '192.168.48.9'},
+    ]
+    assert payload['fw2_caps'] & 2
+    assert not payload['fw2_caps'] & 1  # WireGuard tools: no VPN features
+
+
 def test_hostname_override(gateway_config, collector, device):
     from unifi_protocol import create_inform
     gateway_config.set('gateway', 'hostname', 'edge')

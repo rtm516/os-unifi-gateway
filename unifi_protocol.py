@@ -267,6 +267,9 @@ def _complete_payload(config, dc, device):
         entry = {'mac': lease['mac'], 'ip': lease['ip']}
         if 'hostname' in lease:
             entry['hostname'] = lease['hostname']
+        if 'expire' in lease:
+            # epoch seconds; the controller shows it as the lease expiry
+            entry['leaseExpiry'] = lease['expire']
         active_leases.append(entry)
 
     payload = {
@@ -280,6 +283,9 @@ def _complete_payload(config, dc, device):
         'state': 2,
         'discovery_response': False,
         'fw_caps': 3,
+        # 2: reports ipv4_active_leases (the IPV4_ACTIVE_LEASE_REPORTING site feature).
+        # 1 would claim WireGuard tools
+        'fw2_caps': 2,
         'guest_token': '4C1D46707239C6EB5A2366F505A44A91',
         'has_default_route_distance': True,
         'has_dnsmasq_hostfile_update': True,

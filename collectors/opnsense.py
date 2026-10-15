@@ -19,6 +19,9 @@ ZERO_MAC = '00:00:00:00:00:00'
 # How long to stop asking for something after access was refused
 FORBIDDEN_BACKOFF = 600
 
+# How long a client's DNS name holds against the other PTR records of its address
+RDNS_HOLD = 900
+
 
 def parse_uptime(text):
     """Parse OPNsense's uptime string: '3 days, 04:05:06' or '04:05:06'."""
@@ -183,6 +186,8 @@ class OPNsenseCollector:
         self._wan_dns = []
         self._upstream_dns = []
         self._links = {}
+        self._names = {}
+        self._rdns = {}
         self._started = time.time()
 
         self.wan_interface = config.get('opnsense', 'wan_interface', fallback='WAN')
@@ -531,6 +536,11 @@ class OPNsenseCollector:
             if str(row.get('state', 'active')).lower() not in ('active', '0', ''):
                 continue
             lease = {'mac': mac.lower(), 'ip': ip}
+            # Kea and Dnsmasq give the end as epoch seconds; 0 is a lease
+            # that never ends
+            expire = _leading_number(row.get('expire')) or 0
+            if expire > 0:
+                lease['expire'] = int(expire)
             hostname = row.get('hostname') or row.get('client_hostname')
             if hostname and hostname != '*':
                 lease['hostname'] = hostname
@@ -580,26 +590,80 @@ class OPNsenseCollector:
         uptime = self.uptime()
         hosts = {}
 
-        def add(mac, ip, hostname, client_uptime):
+        arp_names = {}
+        lease_names = {}
+
+        def add(mac, ip, client_uptime):
             entry = {
                 'mac': mac, 'ip': ip, 'authorized': True, 'age': 0,
                 'uptime': client_uptime, 'rx_bytes': 0, 'tx_bytes': 0,
                 'rx_packets': 0, 'tx_packets': 0, 'bc_bytes': 0, 'mc_bytes': 0,
             }
             entry.update(self._flow_totals.get(ip, {}))
-            if hostname:
-                entry['hostname'] = hostname
             hosts[mac] = entry
 
         for row in rows:
             if row.get('intf') != self.lan_device or row.get('expired') or not row.get('mac'):
                 continue
-            add(row['mac'].lower(), row.get('ip', ''), row.get('hostname'), uptime)
+            mac = row['mac'].lower()
+            add(mac, row.get('ip', ''), uptime)
+            arp_names[mac] = row.get('hostname')
 
         for lease in self.data.get('dhcp_leases', []):
             if lease['mac'] not in hosts:
-                add(lease['mac'], lease['ip'], lease.get('hostname'), 0)
-            elif 'hostname' in lease and 'hostname' not in hosts[lease['mac']]:
-                hosts[lease['mac']]['hostname'] = lease['hostname']
+                add(lease['mac'], lease['ip'], 0)
+            lease_names[lease['mac']] = lease.get('hostname')
+
+        # a client keeps its last name while it stays listed, so only
+        # current clients are remembered
+        rdns = self._reverse_dns([h['ip'] for h in hosts.values()])
+        names = {}
+        for mac, entry in hosts.items():
+            name = self._client_name(rdns.get(entry['ip']), lease_names.get(mac),
+                                     arp_names.get(mac))
+            name = name or self._names.get(mac)
+            if name:
+                entry['hostname'] = names[mac] = name
+        self._names = names
 
         return list(hosts.values())
+
+    @staticmethod
+    def _client_name(*candidates):
+        """The first usable name, in order of precedence.
+
+        A UniFi switch names the clients in its mac_table by reverse DNS,
+        and the controller shows whichever name the last informing device
+        sent, so the router's DNS name comes first. Kea's lease name is the
+        same name lower-cased; OPNsense's ARP table carries the hostname
+        from ISC dhcpd's lease file, which goes stale once Kea takes over.
+        """
+        for name in candidates:
+            name = (name or '').strip().rstrip('.')
+            if name and name not in ('*', '?'):
+                return name
+        return None
+
+    def _reverse_dns(self, addresses):
+        """{ip: DNS name} for client addresses.
+
+        An address with several PTR records (host overrides with aliases)
+        gets them in rotating order, so a name is kept while the lookups
+        keep returning it, and through lookups that fail. A different name
+        replaces it once the old one has not come back for RDNS_HOLD.
+        Names drop out with their address."""
+        now = time.time()
+        addresses = [a for a in addresses if a]
+        result = self._call('reverse_dns', addresses) or {}
+        cache = {}
+        for ip in addresses:
+            name = result.get(ip)
+            if name == ip:
+                name = None
+            kept = self._rdns.get(ip)
+            if kept and (name in (None, kept['name']) or now - kept['seen'] < RDNS_HOLD):
+                cache[ip] = dict(kept, seen=now) if name == kept['name'] else kept
+            elif name:
+                cache[ip] = {'name': name, 'seen': now}
+        self._rdns = cache
+        return {ip: entry['name'] for ip, entry in cache.items()}

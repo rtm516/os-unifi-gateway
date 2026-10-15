@@ -381,9 +381,16 @@ class TestClients:
         dc = make(gateway_config, fake_api)
         assert dc._lease_server == 'dnsmasq'
         assert dc.data['dhcp_leases'] == [
-            {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'hostname': 'pi'},
-            {'mac': 'aa:aa:aa:aa:aa:09', 'ip': '192.168.48.9'},
+            {'mac': '00:00:5e:00:53:02', 'ip': '192.168.48.2', 'expire': 1, 'hostname': 'pi'},
+            {'mac': 'aa:aa:aa:aa:aa:09', 'ip': '192.168.48.9', 'expire': 1},
         ]
+
+    def test_lease_expiry(self, gateway_config, fake_api):
+        rows = fake_api.responses['/api/dnsmasq/leases/search']['rows']
+        rows[0]['expire'] = 1792092112
+        rows[1]['expire'] = 0  # a lease that never ends
+        dc = make(gateway_config, fake_api)
+        assert [lease.get('expire') for lease in dc.data['dhcp_leases']] == [1792092112, None]
 
     def test_kea_leases(self, gateway_config, fake_api):
         leases = fake_api.responses.pop('/api/dnsmasq/leases/search')
@@ -406,6 +413,93 @@ class TestClients:
         assert hosts['00:00:5e:00:53:02']['hostname'] == 'pi'
         assert hosts['00:00:5e:00:53:03']['hostname'] == 'phone.lan'
         assert 'hostname' not in hosts['aa:aa:aa:aa:aa:09']
+
+    @staticmethod
+    def names(dc):
+        return {h['mac']: h.get('hostname') for h in dc.data['host_table']}
+
+    @staticmethod
+    def reverse_lookup(names):
+        def answer(path):
+            addresses = [p.split('=', 1)[1] for p in path.split('?', 1)[1].split('&')]
+            return {a: names.get(a, a) for a in addresses}
+        return answer
+
+    def rebuild(self, dc):
+        dc.updated['dhcp_leases'] = dc.updated['host_table'] = 0
+        dc.update()
+        return self.names(dc)
+
+    def test_one_name_per_client_by_precedence(self, gateway_config, fake_api):
+        # A client named three ways, as on a box moved from ISC dhcpd to Kea:
+        # ARP still carries ISC's client-hostname, Kea qualifies and
+        # lower-cases it, and the PTR record is what a UniFi switch reports.
+        # The controller shows whichever name the last device sent.
+        arp = fake_api.responses['/api/diagnostics/interface/search_arp']['rows']
+        arp[0]['hostname'] = 'OCTO-CADLITE'
+        leases = fake_api.responses['/api/dnsmasq/leases/search']['rows']
+        leases[0]['hostname'] = 'octo-cadlite.example.net.'
+        lookup = '/api/diagnostics/dns/reverse_lookup'
+        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'Octo-CadLite.example.net'})
+        dc = make(gateway_config, fake_api)
+        assert self.names(dc)['00:00:5e:00:53:02'] == 'Octo-CadLite.example.net'
+
+        # without a PTR record the lease name wins over ARP, minus the dot
+        fake_api.responses[lookup] = self.reverse_lookup({})
+        dc = make(gateway_config, fake_api)
+        assert self.names(dc)['00:00:5e:00:53:02'] == 'octo-cadlite.example.net'
+
+        # and ARP only names clients nothing else does
+        assert self.names(dc)['00:00:5e:00:53:03'] == 'phone.lan'
+
+    def test_names_survive_refreshes_that_lack_them(self, gateway_config, fake_api):
+        lookup = '/api/diagnostics/dns/reverse_lookup'
+        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'pi.example.net'})
+        dc = make(gateway_config, fake_api)
+        first = self.names(dc)
+        assert first['00:00:5e:00:53:02'] == 'pi.example.net'
+
+        # the resolver answers with the bare address, then fails outright
+        fake_api.responses[lookup] = self.reverse_lookup({})
+        assert self.rebuild(dc) == first
+        fake_api.forbidden.add(lookup)
+        assert self.rebuild(dc) == first
+
+        # a lease refresh that returns no hostnames, or no leases at all
+        for row in fake_api.responses['/api/dnsmasq/leases/search']['rows']:
+            row.pop('hostname', None)
+        assert self.rebuild(dc) == first
+        fake_api.responses['/api/dnsmasq/leases/search']['rows'] = []
+        assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'pi.example.net'
+
+        # clients that are gone are forgotten
+        assert set(dc._names) == {'00:00:5e:00:53:02', '00:00:5e:00:53:03'}
+        assert set(dc._rdns) == {'192.168.48.2'}
+
+    def test_rotating_ptr_records_keep_one_name(self, gateway_config, fake_api):
+        # a host override with an alias gives the address two PTR records,
+        # which Unbound hands out in turn
+        lookup = '/api/diagnostics/dns/reverse_lookup'
+        fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': 'scarif.example.net'})
+        with patch('collectors.opnsense.time.time', return_value=1000.0):
+            dc = make(gateway_config, fake_api)
+        for t, answer in ((1060, 'dashboard.example.net'), (1120, 'scarif.example.net'),
+                          (1180, 'dashboard.example.net'), (1900, 'dashboard.example.net')):
+            fake_api.responses[lookup] = self.reverse_lookup({'192.168.48.2': answer})
+            with patch('collectors.opnsense.time.time', return_value=float(t)):
+                assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'scarif.example.net'
+
+        # a rename shows once the old name has stayed away long enough
+        with patch('collectors.opnsense.time.time', return_value=1120.0 + 901):
+            assert self.rebuild(dc)['00:00:5e:00:53:02'] == 'dashboard.example.net'
+
+    def test_reverse_dns_is_batched_and_optional(self, gateway_config, fake_api):
+        dc = make(gateway_config, fake_api)  # no endpoint: lease and ARP names
+        assert self.names(dc)['00:00:5e:00:53:02'] == 'pi'
+        calls = [c for c in fake_api.calls if 'reverse_lookup' in c]
+        assert len(calls) == 1
+        assert sorted(calls[0].split('?')[1].split('&')) == [
+            'address[]=10.8.1.1', 'address[]=192.168.48.2', 'address[]=192.168.48.9']
 
     def test_client_traffic_accumulates(self, gateway_config, fake_api):
         def top(path):

@@ -74,6 +74,12 @@ class Source:
         hwaddr, hostname, state?}."""
         raise NotImplementedError
 
+    def reverse_dns(self, addresses):
+        """{address: name} as the router's resolver answers PTR lookups,
+        like /api/diagnostics/dns/reverse_lookup. Addresses without a name
+        may be missing or map to themselves."""
+        raise NotImplementedError
+
     def gateway_status(self):
         """Gateway rows: {name, address, interface?, delay: '8.4 ms'}."""
         raise NotImplementedError

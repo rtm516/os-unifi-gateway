@@ -4,6 +4,8 @@
 Each call needs a privilege on the API key's user; when one is missing the
 SourceError carries the privilege name as its hint.
 """
+import urllib.parse
+
 from .opnsense_api import OPNsenseAPI, OPNsenseAPIError, read_api_key_file
 from .source import Source
 
@@ -93,6 +95,17 @@ class APISource(Source):
     def dhcp_leases(self, server):
         path, privilege = LEASE_ENDPOINTS[server]
         return _rows(self._get(path, privilege, LIST_ALL))
+
+    def reverse_dns(self, addresses):
+        names = {}
+        addresses = list(addresses)
+        for i in range(0, len(addresses), 50):
+            query = '&'.join('address[]=%s' % urllib.parse.quote(a) for a in addresses[i:i + 50])
+            response = self._get('/api/diagnostics/dns/reverse_lookup?' + query,
+                                 'Diagnostics: Network Insight')
+            if isinstance(response, dict):
+                names.update(response)
+        return names
 
     def gateway_status(self):
         return _rows(self._get('/api/routes/gateway/status', 'System: Gateways'))
