@@ -158,6 +158,52 @@ class TestSetparam:
         assert _mock_daemon._summarise('{not json' + 'x' * 600)['keys'] == []
 
 
+
+class TestSendInform:
+
+    def _send(self, tmp_path, module, post):
+        conf = tmp_path / 'unifi-gateway.conf'
+        conf.write_text('[gateway]\nurl = http://controller:8080/inform\n')
+        gw = _gateway(module, conf)
+        with patch.object(module.requests, 'post', post), \
+             patch.object(module, 'encode_inform', return_value=b'packet'), \
+             patch.object(module, 'decode_inform', side_effect=lambda config, body: {'body': body}):
+            return gw._send_inform({})
+
+    def test_posts_the_packet(self, tmp_path, _mock_daemon):
+        import requests
+        seen = {}
+
+        def post(url, data=None, headers=None, timeout=None):
+            seen.update(url=url, data=data, headers=headers)
+            response = requests.Response()
+            response.status_code, response._content = 200, b'reply'
+            return response
+        result = self._send(tmp_path, _mock_daemon, post)
+        assert result == {'body': b'reply'}
+        assert seen['url'] == 'http://controller:8080/inform'
+        assert seen['data'] == b'packet'
+        assert seen['headers']['Content-Type'] == 'application/x-binary'
+
+    def test_http_error(self, tmp_path, _mock_daemon):
+        import requests
+
+        def post(url, **kwargs):
+            response = requests.Response()
+            response.status_code, response.reason, response._content = 404, 'Not Found', b''
+            return response
+        result = self._send(tmp_path, _mock_daemon, post)
+        assert result == {'_type': 'httperror', 'code': '404', 'msg': 'Not Found'}
+
+    def test_connection_error(self, tmp_path, _mock_daemon):
+        import requests
+
+        def post(url, **kwargs):
+            raise requests.ConnectionError('refused')
+        result = self._send(tmp_path, _mock_daemon, post)
+        assert result == {'_type': 'urlerror', 'msg': 'refused'}
+
+
 def _collector(gw):
     from collectors.api_source import APISource
     from collectors.opnsense import OPNsenseCollector

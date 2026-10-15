@@ -5,6 +5,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+import requests
 
 import speedtest
 from speedtest import (
@@ -78,11 +79,13 @@ class FakeConnection:
 
 
 def _server_list(servers):
-    def urlopen(request, timeout=None):
-        assert request.full_url == speedtest.SERVERS_URL
-        assert request.get_header('User-agent') == 'unifi-gateway'  # 403 without one
-        return io.BytesIO(json.dumps(servers).encode())
-    return urlopen
+    def get(url, headers=None, timeout=None):
+        assert url == speedtest.SERVERS_URL
+        assert headers['User-Agent'] == 'unifi-gateway'  # 403 without one
+        response = requests.Response()
+        response.status_code, response._content = 200, json.dumps(servers).encode()
+        return response
+    return get
 
 
 @pytest.fixture
@@ -91,7 +94,7 @@ def fake_http():
     FakeConnection.status = 200
     FakeConnection.broken = set()
     with patch('speedtest.http.client.HTTPSConnection', FakeConnection), \
-            patch('speedtest.urllib.request.urlopen', _server_list(SERVERS)), \
+            patch('speedtest.requests.get', _server_list(SERVERS)), \
             patch.object(speedtest, 'DOWNLOAD_BYTES', 256 * 1024), \
             patch.object(speedtest, 'UPLOAD_BYTES', 256 * 1024):
         yield FakeConnection
@@ -309,12 +312,12 @@ class TestOoklaBackend:
             OoklaBackend().latency()
 
     def test_server_list_unavailable(self, fake_http):
-        def urlopen(request, timeout=None):
-            raise OSError('network is unreachable')
-        with patch('speedtest.urllib.request.urlopen', urlopen):
+        def get(url, headers=None, timeout=None):
+            raise requests.ConnectionError('network is unreachable')
+        with patch('speedtest.requests.get', get):
             with pytest.raises(SpeedTestError, match='server list'):
                 OoklaBackend().latency()
-        with patch('speedtest.urllib.request.urlopen', _server_list([])):
+        with patch('speedtest.requests.get', _server_list([])):
             with pytest.raises(SpeedTestError, match='no servers'):
                 OoklaBackend().latency()
 

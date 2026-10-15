@@ -11,11 +11,10 @@ The Pro's ports, as the controller's device database lays them out: eth0 WAN
 and eth1 LAN (1 GbE), eth2 WAN2 and eth3 LAN2 (10G SFP+). We report the first
 two.
 """
-import json
 import logging
 import time
-import urllib.error
-import urllib.request
+
+import requests
 
 logger = logging.getLogger('unifi-gateway')
 
@@ -44,9 +43,9 @@ def parse_firmware_version(response):
 
 def fetch_latest_firmware(platform, timeout=10):
     url = FIRMWARE_URL.format(platform=platform)
-    request = urllib.request.Request(url, headers={'Accept': 'application/json'})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return parse_firmware_version(json.loads(response.read().decode('utf-8')))
+    response = requests.get(url, headers={'Accept': 'application/json'}, timeout=timeout)
+    response.raise_for_status()
+    return parse_firmware_version(response.json())
 
 
 class Device:
@@ -86,7 +85,7 @@ class Device:
             try:
                 latest = fetch_latest_firmware(self.fw_platform)
                 self._next_check = time.time() + FIRMWARE_CHECK_INTERVAL
-            except (urllib.error.URLError, OSError, ValueError) as e:
+            except (requests.RequestException, ValueError) as e:
                 logger.warning('Could not look up latest %s firmware: %s', self.model, e)
                 latest = None
                 self._next_check = time.time() + FIRMWARE_RETRY_INTERVAL

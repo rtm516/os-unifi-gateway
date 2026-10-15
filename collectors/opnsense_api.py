@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Minimal OPNsense REST API client (stdlib only).
+"""Minimal OPNsense REST API client.
 
 Authenticates with an API key/secret pair via HTTP basic auth, as described
 in https://docs.opnsense.org/development/how-tos/api.html
 """
-import base64
 import json
 import logging
-import socket
-import ssl
-import urllib.error
-import urllib.request
+
+import requests
+import urllib3
 
 from .source import SourceError
 
@@ -39,49 +37,44 @@ class OPNsenseAPI:
             host = 'https://' + host
         self.base_url = host.rstrip('/')
         self.timeout = timeout
-        token = base64.b64encode(('%s:%s' % (key, secret)).encode('utf-8'))
-        self._auth = 'Basic ' + token.decode('ascii')
-        self._ssl = ssl.create_default_context()
+        self.session = requests.Session()
+        self.session.auth = (key, secret)
+        self.session.headers['Accept'] = 'application/json'
+        self.session.verify = verify_ssl
         if not verify_ssl:
-            self._ssl.check_hostname = False
-            self._ssl.verify_mode = ssl.CERT_NONE
+            # otherwise urllib3 warns on every request
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    def _open(self, path, body=None, timeout=None):
-        headers = {'Authorization': self._auth, 'Accept': 'application/json'}
-        data = None
-        if body is not None:
-            # OPNsense rejects an empty body sent as application/json, so
-            # only declare JSON when there is something to send
-            data = json.dumps(body).encode('utf-8')
-            headers['Content-Type'] = 'application/json'
-        request = urllib.request.Request(
-            self.base_url + path, data=data, headers=headers,
-            method='POST' if data is not None else 'GET',
-        )
+    def _request(self, path, body=None, timeout=None, stream=False):
+        # OPNsense rejects an empty body sent as application/json, so GETs
+        # send none and POSTs at least {}
         try:
-            return urllib.request.urlopen(
-                request, context=self._ssl, timeout=timeout or self.timeout
+            response = self.session.request(
+                'POST' if body is not None else 'GET', self.base_url + path, json=body,
+                timeout=timeout or self.timeout, stream=stream,
             )
-        except urllib.error.HTTPError as e:
-            raise OPNsenseAPIError(path, e.code, e.reason) from None
-        except (urllib.error.URLError, socket.timeout, OSError) as e:
-            raise OPNsenseAPIError(path, None, str(getattr(e, 'reason', e))) from None
+        except requests.RequestException as e:
+            raise OPNsenseAPIError(path, None, str(e)) from None
+        if not response.ok:
+            response.close()
+            raise OPNsenseAPIError(path, response.status_code, response.reason)
+        return response
 
     def get(self, path):
-        return self._read_json(path, self._open(path))
+        return self._read_json(path, self._request(path))
 
     def post(self, path, body=None):
-        return self._read_json(path, self._open(path, body if body is not None else {}))
+        return self._read_json(path, self._request(path, body if body is not None else {}))
 
     def first_event(self, path, timeout=5):
         """Read the first `data:` line of a server-sent event stream."""
-        response = self._open(path, timeout=timeout)
+        response = self._request(path, timeout=timeout, stream=True)
         try:
-            for raw in response:
+            for raw in response.iter_lines():
                 line = raw.decode('utf-8', 'replace').strip()
                 if line.startswith('data:'):
                     return json.loads(line[5:].strip())
-        except (socket.timeout, OSError, ValueError) as e:
+        except (requests.RequestException, ValueError) as e:
             raise OPNsenseAPIError(path, None, str(e)) from None
         finally:
             response.close()
@@ -90,7 +83,6 @@ class OPNsenseAPI:
     @staticmethod
     def _read_json(path, response):
         try:
-            with response:
-                return json.loads(response.read().decode('utf-8'))
-        except ValueError as e:
+            return response.json()
+        except (requests.RequestException, ValueError) as e:
             raise OPNsenseAPIError(path, None, 'invalid JSON: %s' % e) from None

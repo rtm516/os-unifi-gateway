@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""The WAN speed test the controller starts, using only the standard library.
+"""The WAN speed test the controller starts.
 
 The controller sends `{"cmd": "speed-test", "up_duration", "down_duration"}`
 and reads `speedtest-status` from every inform after that. Each phase
@@ -20,8 +20,8 @@ import os
 import statistics
 import threading
 import time
-import urllib.error
-import urllib.request
+
+import requests
 
 logger = logging.getLogger('unifi-gateway')
 
@@ -113,11 +113,11 @@ class OoklaBackend:
 
     def servers(self):
         """speedtest.net's nearest servers for this address."""
-        request = urllib.request.Request(SERVERS_URL, headers=HEADERS)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                servers = json.loads(response.read().decode('utf-8'))
-        except (urllib.error.URLError, OSError, ValueError) as e:
+            response = requests.get(SERVERS_URL, headers=HEADERS, timeout=self.timeout)
+            response.raise_for_status()
+            servers = response.json()
+        except (requests.RequestException, ValueError) as e:
             raise SpeedTestError('cannot get the speedtest.net server list: %s' % e)
         if not isinstance(servers, list) or not servers:
             raise SpeedTestError('speedtest.net returned no servers')

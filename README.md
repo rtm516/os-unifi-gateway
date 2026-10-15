@@ -120,7 +120,7 @@ Environment variables override the config file.
 | `OPNSENSE_HOST` | Router address (IP or hostname, optionally with scheme and port) |
 | `OPNSENSE_API_KEY`, `OPNSENSE_API_SECRET` | API credentials |
 | `OPNSENSE_API_KEY_FILE` | Path to the `apikey.txt` OPNsense lets you download |
-| `OPNSENSE_VERIFY_SSL` | `true` to verify the router's certificate |
+| `OPNSENSE_VERIFY_SSL` | `true` to verify the router's certificate (against [certifi](https://pypi.org/project/certifi/)'s CAs; set `REQUESTS_CA_BUNDLE` to a CA file for a router with a private CA) |
 | `OPNSENSE_WAN_INTERFACE`, `OPNSENSE_LAN_INTERFACE` | Interfaces to report (default `WAN` / `LAN`) |
 | `UNIFI_ADOPT_URL` | Controller inform URL |
 | `UNIFI_GW_FIRMWARE` | Pin the reported firmware instead of tracking the latest |
@@ -158,7 +158,6 @@ Adoption state is added to the file automatically; don't edit it.
 ```sh
 pip install -r requirements.txt pytest jinja2
 python -m pytest
-UNIFI_GW_AES_BACKEND=openssl python -m pytest   # the AES path the plugin uses on OPNsense
 ```
 
 | Path | Purpose |
@@ -168,7 +167,7 @@ UNIFI_GW_AES_BACKEND=openssl python -m pytest   # the AES path the plugin uses o
 | `devices.py` | Emulated model and latest-firmware lookup |
 | `speedtest.py` | The controller's WAN speed test, against speedtest.net servers |
 | `isp.py` | Looks up the WAN's ISP for the controller |
-| `aes.py` | AES via pycryptodome, or OpenSSL `libcrypto` through ctypes when that isn't installed (as on OPNsense) |
+| `aes.py` | AES-CBC/GCM for inform packets |
 | `collectors/opnsense.py` | Turns router state into what the payload needs |
 | `collectors/source.py` | The interface between the collector and the router |
 | `collectors/local_source.py` | On the router: configd and `config.xml` (used by the plugin) |

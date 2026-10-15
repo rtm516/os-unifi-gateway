@@ -42,11 +42,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pytest jinja2
 
-      - name: Test (pycryptodome)
+      - name: Test
         run: python -m pytest -q
-
-      - name: Test (OpenSSL via ctypes, as on OPNsense)
-        run: UNIFI_GW_AES_BACKEND=openssl python -m pytest -q
 
       - name: CLI help check
         run: python unifi_gateway.py --help

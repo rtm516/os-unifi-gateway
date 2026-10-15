@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Emulated device profiles and firmware lookup."""
-import io
 import json
-import urllib.error
 from unittest.mock import patch
+
+import requests
 
 from devices import Device, fetch_latest_firmware, parse_firmware_version
 
@@ -21,10 +21,12 @@ def test_parse_firmware_version():
 def test_fetch_queries_platform():
     seen = {}
 
-    def urlopen(request, timeout=None):
-        seen['url'] = request.full_url
-        return io.BytesIO(json.dumps(FW_RESPONSE).encode())
-    with patch('urllib.request.urlopen', urlopen):
+    def get(url, headers=None, timeout=None):
+        seen['url'] = url
+        response = requests.Response()
+        response.status_code, response._content = 200, json.dumps(FW_RESPONSE).encode()
+        return response
+    with patch('devices.requests.get', get):
         assert fetch_latest_firmware('UXGPROV2') == '5.1.26.33914'
     assert 'filter=eq~~platform~~UXGPROV2' in seen['url']
     assert 'filter=eq~~channel~~release' in seen['url']
@@ -55,12 +57,12 @@ def test_refresh_looks_up_again(gateway_config):
 
 def test_lookup_failure_keeps_last_known(gateway_config):
     device = Device(gateway_config)
-    with patch('devices.fetch_latest_firmware', side_effect=urllib.error.URLError('offline')):
+    with patch('devices.fetch_latest_firmware', side_effect=requests.ConnectionError('offline')):
         assert device.firmware() == '5.1.26.33914'  # built-in fallback
     with patch('devices.fetch_latest_firmware', return_value='5.3.0.1'):
         device.refresh_firmware()
         assert device.firmware() == '5.3.0.1'
-    with patch('devices.fetch_latest_firmware', side_effect=urllib.error.URLError('offline')):
+    with patch('devices.fetch_latest_firmware', side_effect=requests.ConnectionError('offline')):
         device.refresh_firmware()
         assert device.firmware() == '5.3.0.1'
 

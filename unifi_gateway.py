@@ -10,8 +10,8 @@ import signal
 import socket
 import sys
 import time
-import urllib.request
-import urllib.error
+
+import requests
 
 from collectors import SourceError, create_collector
 from daemon import Daemon
@@ -571,17 +571,18 @@ class UnifiGateway(Daemon):
             'Expect': '100-continue',
         }
         url = self.config.get('gateway', 'url')
-        request = urllib.request.Request(
-            url, encode_inform(self.config, data, encryption=encryption), headers
-        )
         logger.debug('Sending inform to %s', url)
         try:
-            response = urllib.request.urlopen(request, timeout=30)
-        except urllib.error.HTTPError as e:
-            return {'_type': 'httperror', 'code': str(e.code), 'msg': str(e.reason)}
-        except urllib.error.URLError as e:
-            return {'_type': 'urlerror', 'msg': str(e.reason)}
-        return decode_inform(self.config, response.read())
+            response = requests.post(
+                url, data=encode_inform(self.config, data, encryption=encryption),
+                headers=headers, timeout=30,
+            )
+        except requests.RequestException as e:
+            return {'_type': 'urlerror', 'msg': str(e)}
+        if not response.ok:
+            return {'_type': 'httperror', 'code': str(response.status_code),
+                    'msg': response.reason}
+        return decode_inform(self.config, response.content)
 
     def _save_config(self):
         config = copy.deepcopy(self.config)
