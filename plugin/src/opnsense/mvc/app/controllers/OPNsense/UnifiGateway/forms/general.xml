@@ -1,0 +1,40 @@
+<form>
+    <field>
+        <id>unifigateway.general.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Report this firewall to a UniFi Network controller as a UniFi gateway.</help>
+    </field>
+    <field>
+        <id>unifigateway.general.inform_url</id>
+        <label>Controller inform URL</label>
+        <type>text</type>
+        <help>The controller's inform address, usually http://&lt;controller&gt;:8080/inform. Once the gateway shows up in the controller, click Adopt there.</help>
+    </field>
+    <field>
+        <id>unifigateway.general.wan_interface</id>
+        <label>WAN interface</label>
+        <type>dropdown</type>
+        <help>Reported as the gateway's WAN port (address, gateway, traffic, DNS).</help>
+    </field>
+    <field>
+        <id>unifigateway.general.lan_interface</id>
+        <label>LAN interface</label>
+        <type>dropdown</type>
+        <help>Reported as the gateway's LAN port. Its address and MAC identify the gateway to the controller, and clients seen on it are listed.</help>
+    </field>
+    <field>
+        <id>unifigateway.general.firmware</id>
+        <label>Firmware version</label>
+        <type>text</type>
+        <advanced>true</advanced>
+        <help>Leave empty to always report the newest firmware Ubiquiti has released for the model, so the controller never offers an upgrade. Set a version to pin it.</help>
+    </field>
+    <field>
+        <id>unifigateway.general.hostname</id>
+        <label>Hostname</label>
+        <type>text</type>
+        <advanced>true</advanced>
+        <help>Hostname reported to the controller. Defaults to this firewall's hostname. To change the device name shown in the controller, rename it there.</help>
+    </field>
+</form>

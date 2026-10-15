@@ -1,0 +1,36 @@
+# A throwaway UniFi Network controller plus the gateway, for trying things out
+# without touching a real controller:
+#
+#   OPNSENSE_HOST=192.168.1.1 UNIFI_GW_APIKEY=./conf/apikey.txt \
+#     docker compose -f docker-compose.dev.yml up -d --build
+#
+# Then open https://127.0.0.1:18443 (set UNIFI_BIND=0.0.0.0 to reach it from
+# other machines), finish the setup wizard, and adopt the
+# pending gateway. `docker compose -f docker-compose.dev.yml down -v` wipes it.
+
+services:
+  unifi:
+    image: jacobalberty/unifi:latest
+    ports:
+      - "${UNIFI_BIND:-127.0.0.1}:18443:8443"
+      - "${UNIFI_BIND:-127.0.0.1}:18080:8080"
+    volumes:
+      - unifi-data:/unifi
+
+  gateway:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - unifi
+    volumes:
+      - gateway-conf:/app/conf
+      - ${UNIFI_GW_APIKEY:-./conf/apikey.txt}:/run/apikey.txt:ro
+    environment:
+      - OPNSENSE_HOST=${OPNSENSE_HOST:?set OPNSENSE_HOST to the router address}
+      - OPNSENSE_API_KEY_FILE=/run/apikey.txt
+      - UNIFI_ADOPT_URL=http://unifi:8080/inform
+      - UNIFI_GW_LOG_LEVEL=INFO
+
+volumes:
+  unifi-data:
+  gateway-conf:

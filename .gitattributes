@@ -1,0 +1,4 @@
+# Everything here runs on FreeBSD/OPNsense or Linux: keep LF line endings,
+# even in Windows checkouts (rc.d and build scripts break with CRLF)
+* text=auto eol=lf
+*.pkg binary

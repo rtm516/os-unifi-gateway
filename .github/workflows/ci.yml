@@ -3,6 +3,8 @@ name: CI
 on:
   pull_request:
     branches: [master]
+  push:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -21,12 +23,14 @@ jobs:
       - run: pip install ruff
 
       - name: Lint
-        run: ruff check --exclude poc/ --exclude controller/ --ignore E401,E402 .
+        # explicit rules: newer ruff releases widen the default set
+        run: ruff check --exclude poc/ --select E,F --ignore E401,E402,E501 .
 
-  smoke-test:
+  test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
+        # 3.11 is what OPNsense 25.x ships
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -36,18 +40,40 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt pytest jinja2
 
-      - name: Import check
-        run: |
-          python -c "
-          import unifi_gateway
-          import datacollector
-          import unifi_protocol
-          import tools
-          import tlv
-          import daemon
-          "
+      - name: Test (pycryptodome)
+        run: python -m pytest -q
+
+      - name: Test (OpenSSL via ctypes, as on OPNsense)
+        run: UNIFI_GW_AES_BACKEND=openssl python -m pytest -q
 
       - name: CLI help check
         run: python unifi_gateway.py --help
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build pkg(8) for Linux
+        uses: docker/build-push-action@v6
+        with:
+          context: plugin
+          file: plugin/Dockerfile.pkg
+          tags: unifi-gateway-pkg
+          load: true
+          cache-from: type=gha,scope=pkg-tool
+          cache-to: type=gha,scope=pkg-tool,mode=max
+
+      - name: Build plugin package
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src unifi-gateway-pkg \
+            sh -c 'sh plugin/build-pkg.sh 0.0.0.dev dist && pkg info -F dist/os-unifi-gateway-0.0.0.dev.pkg -l'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: os-unifi-gateway
+          path: dist/*.pkg

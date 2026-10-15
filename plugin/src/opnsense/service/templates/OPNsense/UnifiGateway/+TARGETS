@@ -1,0 +1,2 @@
+unifi_gateway:/etc/rc.conf.d/unifi_gateway
+syslog-filter.conf:/usr/local/opnsense/service/templates/OPNsense/Syslog/local/unifigateway.conf

@@ -7,3 +7,11 @@ conf/unifi-gateway.conf
 conf/unhandled_commands.json
 speedtest.json
 *.pid
+
+# OPNsense API key downloads
+*apikey*.txt
+
+# Build and tool output
+dist/
+.pytest_cache/
+.ruff_cache/

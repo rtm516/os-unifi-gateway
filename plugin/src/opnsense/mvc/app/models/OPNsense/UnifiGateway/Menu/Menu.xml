@@ -1,0 +1,8 @@
+<menu>
+    <Services>
+        <UnifiGateway VisibleName="UniFi Gateway" cssClass="fa fa-wifi fa-fw">
+            <Settings order="10" url="/ui/unifigateway"/>
+            <LogFile VisibleName="Log File" order="20" url="/ui/diagnostics/log/core/unifigateway"/>
+        </UnifiGateway>
+    </Services>
+</menu>

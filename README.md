@@ -1,312 +1,187 @@
-# UniFi Gateway Emulator  [![Build & Release](https://github.com/amd989/unifi-gateway/actions/workflows/release.yml/badge.svg)](https://github.com/amd989/unifi-gateway/actions/workflows/release.yml)
+# UniFi Gateway for OPNsense
 
-A Python 3 daemon that emulates a Ubiquiti UniFi Gateway (UGW3) to a UniFi Controller. This allows non-Ubiquiti routers (OpenWRT, OPNSense, pfSense, or any Linux/FreeBSD router) to appear in the UniFi Controller UI and report network statistics.
+An OPNsense plugin that makes your firewall appear in a UniFi Network controller as a UniFi gateway. The controller then shows the router's WAN and LAN status, traffic, clients and topology alongside your UniFi access points and switches, just as it would for a Ubiquiti gateway.
 
-## How It Works
+It appears as a **UniFi Gateway Lite (UXG)** running Ubiquiti's latest firmware, so the controller never offers an upgrade.
 
-The daemon runs alongside your non-Ubiquiti router and periodically sends "inform" packets to your UniFi Controller — the same binary protocol that real UniFi devices use. The controller sees a UGW3 gateway and displays its stats (interfaces, traffic, connected clients, routes, etc.) in the dashboard.
-
-Your UniFi APs, switches, and other devices continue connecting to the controller normally. This project fills the "gateway" slot so the controller has a complete view of your network topology.
+This project started as a fork of [amd989/unifi-gateway](https://github.com/amd989/unifi-gateway), which did the original work on the inform protocol, adoption flow and payloads that this plugin builds on.
 
 ```
-┌──────────────────┐     inform (HTTP POST)     ┌───────────────────┐
-│  This Daemon     │ ─────────────────────────► │  UniFi Controller │
-│  (emulates UGW3) │                            │                   │
-└────────┬─────────┘                            │  Sees complete    │
-         │ reads stats from                     │  network topology │
-┌────────▼─────────┐                            │                   │
-│  Your Router     │     UniFi APs/Switches ──► │                   │
-│  (OPNSense/etc)  │     also inform normally   └───────────────────┘
-└──────────────────┘
+┌───────────────────────────┐   inform (HTTP POST, AES)   ┌───────────────────┐
+│ OPNsense                  │ ──────────────────────────► │ UniFi Network     │
+│  └─ os-unifi-gateway      │ ◄────────────────────────── │ controller        │
+│     reads interfaces,     │   adoption, settings        │                   │
+│     clients, DHCP, DNS    │                             │ sees a UniFi      │
+│     straight from configd │   UniFi APs / switches ───► │ gateway           │
+└───────────────────────────┘   inform normally           └───────────────────┘
 ```
-
-## Requirements
-
-- A running UniFi Controller (self-hosted or Cloud Key)
-- Network access from the daemon to the controller's `/inform` endpoint
 
 ## Installation
 
-### Debian / Ubuntu (apt)
+The plugin is published as a pkg repository on this repository's [`pkg-repo`](https://github.com/rtm516/unifi-gateway/tree/pkg-repo) branch. On the OPNsense shell (**System > Console** or SSH):
 
-```bash
-curl -fsSL https://amd989.github.io/unifi-gateway/setup-apt.sh | sudo bash
-sudo apt install unifi-gateway
+```sh
+fetch -o /usr/local/etc/pkg/repos/unifi-gateway.conf \
+  https://raw.githubusercontent.com/rtm516/unifi-gateway/pkg-repo/unifi-gateway.conf
+pkg update
+pkg install os-unifi-gateway
 ```
 
-### RHEL / Rocky / Fedora (dnf)
+After that the plugin shows up under **System > Firmware > Plugins** like any other, and updates arrive with normal OPNsense updates. Each release's package is also attached to its [GitHub release](https://github.com/rtm516/unifi-gateway/releases) (`pkg add os-unifi-gateway-<version>.pkg`).
 
-```bash
-curl -fsSL https://amd989.github.io/unifi-gateway/setup-rpm.sh | sudo bash
-sudo dnf install unifi-gateway
-```
+To remove it: `pkg delete os-unifi-gateway`, then delete `/usr/local/etc/pkg/repos/unifi-gateway.conf`.
 
-### OpenWRT
+## Setup
 
-The OpenWRT packages ship pure Python source and depend on `python3`, `python3-psutil`, and `python3-pycryptodome` from the OpenWRT feeds — keeping the package tiny for flash-constrained devices.
+1. Open **Services > UniFi Gateway**.
+2. Tick **Enable** and enter the controller's **inform URL**, usually `http://<controller>:8080/inform`.
+3. Pick the **WAN** and **LAN** interfaces to report. The LAN interface's address and MAC identify the gateway to the controller.
+4. Click **Apply**.
+5. In the UniFi controller, the gateway shows up as pending adoption. Click **Adopt**.
 
-```bash
-# Auto-detects apk (25.12+) or opkg (older)
-curl -fsSL https://amd989.github.io/unifi-gateway/setup-openwrt.sh | sh
-```
+The page shows the adoption state, and **Services > UniFi Gateway > Log File** shows what the daemon is doing.
 
-Then install with whichever package manager your version uses:
+No API key is needed.
 
-```bash
-# OpenWRT 25.12+ (apk)
-apk add unifi-gateway
+## What gets reported
 
-# OpenWRT pre-25.12 (opkg)
-opkg install unifi-gateway
-```
-
-### FreeBSD / OPNSense / pfSense (pkg)
-
-```bash
-curl -fsSL https://amd989.github.io/unifi-gateway/setup-pkg.sh | sudo sh
-sudo pkg install unifi-gateway
-```
-
-### Docker
-
-```bash
-docker pull ghcr.io/amd989/unifi-gateway:latest
-docker compose up -d
-```
-
-See the [Docker section](#docker) below for details.
-
-### Standalone Binaries
-
-Pre-built binaries are also available from [Releases](https://github.com/amd989/unifi-gateway/releases) if you prefer manual installation.
-
-| Platform | Binary |
+| Controller shows | Comes from |
 |---|---|
-| Linux x86_64 | `unifi-gateway-linux-amd64` |
-| Linux ARM64 | `unifi-gateway-linux-arm64` |
-| Linux ARMv7 | `unifi-gateway-linux-armhf` |
-| FreeBSD x86_64 | `unifi-gateway-freebsd-amd64` |
+| WAN/LAN addresses, MACs, link state, MTU, speed | interface status |
+| Traffic counters and rates | interface statistics |
+| WAN gateway and latency | routing table and gateway monitoring (dpinger) |
+| WAN DNS servers | Unbound's upstream servers, otherwise the WAN link's DNS servers |
+| Clients, hostnames, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
+| Hostname, uptime, CPU, memory | system information |
 
-### From Source
+Per-client traffic needs **Reporting > NetFlow** capturing the LAN interface.
 
-```bash
+## Testing with Docker
+
+For development and testing, the gateway can also run in Docker, reading from the OPNsense REST API.
+
+1. On OPNsense, create a user under **System > Access > Users**, generate an API key for it, and grant it these privileges:
+
+   | Privilege | Needed for |
+   |---|---|
+   | Status: Interfaces | **required**: interfaces, addresses, counters |
+   | Lobby: Dashboard | hostname, version, uptime, CPU, memory |
+   | Diagnostics: ARP Table | client list |
+   | Diagnostics: Network Insight | per-client traffic |
+   | Services: Dnsmasq DNS/DHCP: Settings *or* Services: DHCP: Kea(v4) | client hostnames from DHCP leases |
+   | Services: Unbound | upstream DNS servers |
+   | System: Gateways | WAN latency |
+
+   Some of these privileges also allow changes on that page. Only **Status: Interfaces** is required; the log names any missing privilege.
+
+2. Put the downloaded `apikey.txt` in `conf/`, set the router address and controller URL in `docker-compose.yml`, and start it:
+
+   ```sh
+   docker compose up -d
+   docker compose logs -f
+   ```
+
+   `conf/unifi-gateway.conf` is created on first start.
+
+To see what would be sent without talking to a controller:
+
+```sh
+docker compose run --rm unifi-gateway dump
+```
+
+### Running from source
+
+```sh
 pip install -r requirements.txt
+OPNSENSE_HOST=192.168.1.1 OPNSENSE_API_KEY_FILE=apikey.txt \
+UNIFI_ADOPT_URL=http://controller:8080/inform python unifi_gateway.py run
 ```
 
-## Quick Start
+Commands: `run` (foreground), `start` / `stop` / `restart` (background daemon), `set-adopt -s <url>`, `dump`, `status`.
 
-### 1. Install dependencies
+## Configuration reference
 
-```bash
-pip install -r requirements.txt
-```
+Only needed for Docker or source installs.
 
-### 2. Configure
+### Environment variables
 
-Copy the sample config and edit it:
+Environment variables override the config file.
 
-```bash
-cp conf/unifi-gateway.sample.conf conf/unifi-gateway.conf
-```
+| Variable | Setting |
+|---|---|
+| `OPNSENSE_HOST` | Router address (IP or hostname, optionally with scheme and port) |
+| `OPNSENSE_API_KEY`, `OPNSENSE_API_SECRET` | API credentials |
+| `OPNSENSE_API_KEY_FILE` | Path to the `apikey.txt` OPNsense lets you download |
+| `OPNSENSE_VERIFY_SSL` | `true` to verify the router's certificate |
+| `OPNSENSE_WAN_INTERFACE`, `OPNSENSE_LAN_INTERFACE` | Interfaces to report (default `WAN` / `LAN`) |
+| `UNIFI_ADOPT_URL` | Controller inform URL |
+| `UNIFI_GW_FIRMWARE` | Pin the reported firmware instead of tracking the latest |
+| `UNIFI_GW_HOSTNAME` | Hostname reported to the controller (default: the router's hostname) |
+| `UNIFI_GW_SOURCE` | `api` (default) or `local` (on the router itself) |
+| `UNIFI_GW_CONFIG` | Config file path (default `conf/unifi-gateway.conf`) |
+| `UNIFI_GW_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `UNIFI_GW_LOG_FILE` | Log to a file instead of stderr |
 
-Edit `conf/unifi-gateway.conf`:
+### Config file
 
 ```ini
+[opnsense]
+host = 192.168.1.1
+api_key =
+api_secret =
+# api_key_file = /path/to/apikey.txt
+verify_ssl = False
+# Interfaces are matched by description, then identifier (wan, lan, opt1), then device
+# wan_interface = WAN
+# lan_interface = LAN
+# DHCP lease source: auto, dnsmasq, kea, isc or none
+# dhcp = auto
+
 [gateway]
-# Map UniFi logical ports to your real system interfaces
-ports = [ { "ifname": "eth0", "name": "WAN", "type": "wan", "realif": "eth0" }, { "ifname": "eth1", "name": "LAN", "type": "lan", "realif": "br-lan" } ]
-
-# Your LAN-side IP and MAC (how the controller identifies this device)
-lan_ip = 192.168.1.1
-lan_mac = aa:bb:cc:dd:ee:ff
+# firmware = latest
+# hostname = my-gateway
 ```
 
-The `realif` values must match your actual system interface names (check with `ip link` on Linux or `ifconfig` on FreeBSD).
+Adoption state is added to the file automatically; don't edit it.
 
-### 3. Adopt to controller
+## Development
 
-```bash
-python unifi_gateway.py set-adopt -s http://your-controller:8080/inform
+```sh
+pip install -r requirements.txt pytest jinja2
+python -m pytest
+UNIFI_GW_AES_BACKEND=openssl python -m pytest   # the AES path the plugin uses on OPNsense
 ```
 
-The first run sends a discovery inform. Go to the UniFi Controller UI, find the new "USG" device, and click **Adopt**. Then run `set-adopt` again to complete the handshake:
-
-```bash
-python unifi_gateway.py set-adopt -s http://your-controller:8080/inform
-```
-
-### 4. Run
-
-```bash
-# Foreground (recommended for initial testing)
-python unifi_gateway.py run
-
-# Background daemon (Linux only)
-python unifi_gateway.py start
-
-# Stop / restart
-python unifi_gateway.py stop
-python unifi_gateway.py restart
-```
-
-## Platform Setup
-
-### OpenWRT
-
-The daemon works with OpenWRT's default dnsmasq DHCP server. Typical interface mapping:
-
-```ini
-ports = [ { "ifname": "eth0", "name": "WAN", "type": "wan", "realif": "eth0" }, { "ifname": "eth1", "name": "LAN", "type": "lan", "realif": "br-lan" } ]
-```
-
-DHCP leases are auto-detected at `/tmp/dhcp.leases`.
-
-### OPNSense (FreeBSD)
-
-The daemon auto-detects FreeBSD and uses `arp -an` for the neighbor table, `netstat -rn` for routing. It supports KEA DHCP (OPNSense's default DHCP server) with auto-detection of the lease file at `/var/db/kea/kea-leases4.csv`.
-
-Typical interface mapping (check your interfaces with `ifconfig`):
-
-```ini
-ports = [ { "ifname": "eth0", "name": "WAN", "type": "wan", "realif": "vmx0" }, { "ifname": "eth1", "name": "LAN", "type": "lan", "realif": "vmx1" } ]
-dhcp_lease_file = /var/db/kea/kea-leases4.csv
-dhcp_lease_format = kea
-```
-
-Recommended setup using a Python virtual environment:
-
-```bash
-python3 -m venv /opt/unifi-gateway/venv
-/opt/unifi-gateway/venv/bin/pip install -r requirements.txt
-/opt/unifi-gateway/venv/bin/python unifi_gateway.py set-adopt -s http://your-controller:8080/inform
-/opt/unifi-gateway/venv/bin/python unifi_gateway.py run
-```
-
-### pfSense (FreeBSD)
-
-Same as OPNSense but uses ISC dhcpd instead of KEA:
-
-```ini
-dhcp_lease_file = /var/dhcpd/var/db/dhcpd.leases
-dhcp_lease_format = isc
-```
-
-### Generic Linux (Debian, Ubuntu, etc.)
-
-Works out of the box. Uses `/proc/net/dev` for multicast counters, `/proc/net/route` for default gateway, and `/etc/resolv.conf` for nameservers.
-
-## Docker
-
-### Build and run
-
-```bash
-docker build -t unifi-gateway .
-docker run -d --name unifi-gateway --network host \
-  -v $(pwd)/conf:/app/conf \
-  unifi-gateway
-```
-
-### Docker Compose
-
-```bash
-docker compose up -d
-```
-
-For automatic adoption on first start, set the `UNIFI_ADOPT_URL` environment variable in `docker-compose.yml`:
-
-```yaml
-environment:
-  - UNIFI_ADOPT_URL=http://your-controller:8080/inform
-```
-
-**Note:** `network_mode: host` is required so the daemon can read the host's real network interfaces. This only works on **Linux** — Docker Desktop on Windows/macOS does not support host networking.
-
-## Service Management
-
-Packages automatically install and enable the service. After configuring, just start it:
-
-| Platform | Start | Logs |
-|---|---|---|
-| systemd (Debian/Ubuntu/RHEL) | `sudo systemctl start unifi-gateway` | `journalctl -u unifi-gateway -f` |
-| rc.d (FreeBSD/OPNSense) | `sudo service unifi_gateway start` | `tail -f /var/log/unifi-gateway.log` |
-| procd (OpenWRT) | `/etc/init.d/unifi-gateway start` | `logread -e unifi-gateway` |
-
-Updates are handled by your package manager: `apt upgrade`, `dnf upgrade`, `opkg upgrade`, `apk upgrade`, or `pkg upgrade`.
-
-## Configuration Reference
-
-### Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `UNIFI_GW_CONFIG` | `conf/unifi-gateway.conf` | Path to config file |
-| `UNIFI_GW_LOG_LEVEL` | `DEBUG` | Log level (DEBUG, INFO, WARNING, ERROR) |
-| `UNIFI_GW_LOG_FILE` | *(stderr)* | Log to file instead of stderr |
-| `UNIFI_ADOPT_URL` | *(none)* | Controller inform URL for automatic adoption on start |
-| `UNIFI_ADOPT_KEY` | *(none)* | Auth key for auto-adoption (optional, rarely needed) |
-
-### Config File (`conf/unifi-gateway.conf`)
-
-#### `[global]`
-
-| Key | Default | Description |
-|---|---|---|
-| `pid_file` | `unifi-gateway.pid` | PID file path for daemon mode |
-| `disable_broadcast` | `True` | Disable UDP multicast discovery |
-
-#### `[gateway]`
-
-| Key | Default | Description |
-|---|---|---|
-| `ports` | *(required)* | JSON list mapping UniFi ports to real interfaces |
-| `lan_ip` | *(required)* | LAN IP address |
-| `lan_mac` | *(required)* | LAN MAC address |
-| `firmware` | `4.4.18.5052168` | Reported firmware version |
-| `device` | `UGW3` | Device model string |
-| `device_display` | `UniFi-Gateway-3` | Display name |
-| `use_aes_gcm` | `False` | Use AES-GCM encryption (set by controller) |
-| `hostname` | *(auto-detected)* | Override reported hostname |
-| `dhcp_lease_file` | *(auto-detected)* | Path to DHCP lease file |
-| `dhcp_lease_format` | `dnsmasq` | Lease format: `dnsmasq`, `isc`, or `kea` |
-| `ping_target` | `ping.ubnt.com` | Host for latency measurement |
-| `speedtest_file` | `./speedtest.json` | Path to speedtest results JSON |
-| `platform` | `UNIFI-GW` | Platform string in discovery broadcasts |
-
-#### `[provisioned]`
-
-Populated automatically by the controller after adoption. Do not edit manually.
-
-## Speed Test
-
-The controller can trigger speed tests. Install `speedtest-cli` for this to work:
-
-```bash
-pip install speedtest-cli
-```
-
-Results are saved to `speedtest.json` and reported in the next inform cycle.
-
-## Architecture
-
-| Module | Purpose |
+| Path | Purpose |
 |---|---|
-| `unifi_gateway.py` | Entry point, inform loop, controller response handling, adoption |
-| `unifi_protocol.py` | TNBU binary protocol: AES-CBC/GCM encryption, zlib/snappy compression, JSON payload construction |
-| `datacollector.py` | Cross-platform data collection via psutil (Linux + FreeBSD), with platform-specific fallbacks |
-| `tools.py` | Helper functions for building `if_table` and `network_table` structures |
-| `tlv.py` | TLV encoding for UDP discovery packets |
-| `daemon.py` | Unix daemon (double-fork, PID file) |
+| `unifi_gateway.py` | Entry point: adoption, inform loop, controller responses, config handling |
+| `unifi_protocol.py` | Inform packets (TNBU header, AES-CBC/GCM, zlib/snappy) and payloads |
+| `devices.py` | Emulated model and latest-firmware lookup |
+| `aes.py` | AES via pycryptodome, or OpenSSL `libcrypto` through ctypes when that isn't installed (as on OPNsense) |
+| `collectors/opnsense.py` | Turns router state into what the payload needs |
+| `collectors/source.py` | The interface between the collector and the router |
+| `collectors/local_source.py` | On the router: configd and `config.xml` (used by the plugin) |
+| `collectors/api_source.py` | Off the router: the REST API (used for Docker and testing) |
+| `plugin/` | The OPNsense plugin, laid out like [opnsense/plugins](https://github.com/opnsense/plugins) |
+
+`plugin/build-pkg.sh` builds the package and `plugin/build-repo.sh` the repository. Both need FreeBSD's `pkg`; `plugin/Dockerfile.pkg` builds it for Linux, so packages can be made on any machine with Docker:
+
+```sh
+docker build -t unifi-gateway-pkg -f plugin/Dockerfile.pkg plugin
+docker run --rm -v "$PWD:/src" -w /src unifi-gateway-pkg sh plugin/build-pkg.sh 0.1.0 dist
+```
+
+Pushing a `v*` tag builds the plugin package, attaches it to a GitHub release, publishes it to the `pkg-repo` branch and pushes the Docker image to GHCR.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-This project builds upon and was inspired by:
-
-- [stephanlascar/unifi-gateway](https://github.com/stephanlascar/unifi-gateway) — original UniFi Gateway emulator
-- [qvr/unifi-gateway](https://github.com/qvr/unifi-gateway) — Python 3 port, FreeBSD support, AES-GCM encryption
+- [amd989/unifi-gateway](https://github.com/amd989/unifi-gateway): the project this was forked from
+- [stephanlascar/unifi-gateway](https://github.com/stephanlascar/unifi-gateway): the original UniFi gateway emulator
+- [qvr/unifi-gateway](https://github.com/qvr/unifi-gateway): Python 3 port, FreeBSD support, AES-GCM
 
 Protocol documentation:
 

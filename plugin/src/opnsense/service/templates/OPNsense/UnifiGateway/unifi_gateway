@@ -1,0 +1,7 @@
+{% if helpers.exists('OPNsense.unifigateway.general.enabled') and OPNsense.unifigateway.general.enabled == '1' %}
+{% set gw = OPNsense.unifigateway.general %}
+unifi_gateway_enable="YES"
+unifi_gateway_env="UNIFI_GW_SOURCE=local OPNSENSE_WAN_INTERFACE={{ gw.wan_interface }} OPNSENSE_LAN_INTERFACE={{ gw.lan_interface }}{% if gw.inform_url %} UNIFI_ADOPT_URL={{ gw.inform_url }}{% endif %}{% if gw.firmware %} UNIFI_GW_FIRMWARE={{ gw.firmware }}{% endif %}{% if gw.hostname %} UNIFI_GW_HOSTNAME={{ gw.hostname }}{% endif %}"
+{% else %}
+unifi_gateway_enable="NO"
+{% endif %}

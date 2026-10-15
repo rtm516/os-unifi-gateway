@@ -1,34 +1,36 @@
 # -*- coding: utf-8 -*-
-import time
+import ipaddress
 import json
-import ast
-from Crypto import Random
-
 import logging
+import os
+import socket
+import time
+import urllib.parse
 import zlib
+from binascii import a2b_hex
+from struct import pack, unpack
+
 try:
     import snappy
     HAS_SNAPPY = True
 except ImportError:
     HAS_SNAPPY = False
 
-logger = logging.getLogger('unifi-gateway')
-
-from Crypto.Cipher import AES
-from struct import pack, unpack
-from binascii import a2b_hex
-
+import aes
 from tlv import UnifiTLV
 from tools import (
-    mac_string_2_array, ip_string_2_array, netmask_to_cidr,
-    uptime, get_hostname, get_if_table, get_network_table,
+    mac_string_2_array, ip_string_2_array,
+    get_if_table, get_network_table,
 )
 
+logger = logging.getLogger('unifi-gateway')
+
 MASTER_KEY = "ba86f2bbe107c7c57eb5f2690775c712"
+BLOCK_SIZE = 16
 
 
 def encode_inform(config, data, encryption='CBC'):
-    iv = Random.new().read(16)
+    iv = os.urandom(16)
     key = MASTER_KEY
 
     if config.getboolean('gateway', 'is_adopted'):
@@ -60,15 +62,12 @@ def encode_inform(config, data, encryption='CBC'):
     encoded_data += pack('>I', 1)
 
     if encryption == 'GCM':
-        encoded_data += pack('>I', len(payload) + 16)
-        _aes = AES.new(a2b_hex(key), AES.MODE_GCM, iv)
-        _aes.update(encoded_data)
-        payload, tag = _aes.encrypt_and_digest(payload)
-        payload += tag
+        encoded_data += pack('>I', len(payload) + aes.TAG_SIZE)
+        payload = aes.gcm_encrypt(a2b_hex(key), iv, encoded_data, payload)
     elif encryption == 'CBC':
-        pad_len = AES.block_size - (len(payload) % AES.block_size)
+        pad_len = BLOCK_SIZE - (len(payload) % BLOCK_SIZE)
         payload += bytes([pad_len]) * pad_len
-        payload = AES.new(a2b_hex(key), AES.MODE_CBC, iv).encrypt(payload)
+        payload = aes.cbc_encrypt(a2b_hex(key), iv, payload)
         encoded_data += pack('>I', len(payload))
 
     encoded_data += payload
@@ -99,15 +98,11 @@ def decode_inform(config, encoded_data):
 
     if flag['encrypted']:
         if flag['encryptedGCM']:
-            tag = payload[-16:]
-            payload = payload[:-16]
-            _aes = AES.new(a2b_hex(key), AES.MODE_GCM, iv)
-            _aes.update(header)
-            payload = _aes.decrypt_and_verify(payload, tag)
+            payload = aes.gcm_decrypt(a2b_hex(key), iv, header, payload)
         else:
-            payload = AES.new(a2b_hex(key), AES.MODE_CBC, iv).decrypt(payload)
+            payload = aes.cbc_decrypt(a2b_hex(key), iv, payload)
             pad_size = payload[-1]
-            if pad_size > AES.block_size:
+            if pad_size > BLOCK_SIZE:
                 raise Exception('Response not padded or padding is corrupt')
             payload = payload[:(len(payload) - pad_size)]
 
@@ -124,6 +119,23 @@ def decode_inform(config, encoded_data):
     return json.loads(payload)
 
 
+_inform_ip_cache = {}
+
+
+def _inform_ip(url):
+    """The controller's address; it rejects informs that only carry a name."""
+    host = urllib.parse.urlparse(url or '').hostname or ''
+    cached = _inform_ip_cache.get(host)
+    if cached and time.time() - cached[1] < 300:
+        return cached[0]
+    try:
+        address = socket.gethostbyname(host) if host else ''
+    except OSError:
+        address = host
+    _inform_ip_cache[host] = (address, time.time())
+    return address
+
+
 def _resolve_lan_identity(config, dc, lan_if):
     """Get LAN MAC and IP, preferring live data but falling back to config."""
     mac = dc.data.get('macs', {}).get(lan_if)
@@ -136,35 +148,88 @@ def _resolve_lan_identity(config, dc, lan_if):
     return mac, ip_addr, ip_info
 
 
-def _create_partial_inform(config, dc):
-    ports = ast.literal_eval(config.get('gateway', 'ports'))
-    lan_if = [d['ifname'] for d in ports if d['type'].lower() == 'lan'][0]
-    mac, ip_addr, _ = _resolve_lan_identity(config, dc, lan_if)
-
-    return json.dumps({
-        'hostname': 'UBNT',
-        'state': 0,
+def _create_partial_inform(config, dc, device):
+    """What a factory-default device sends: everything it would report once
+    adopted, flagged as unadopted and keyed with the default key."""
+    payload = _complete_payload(config, dc, device)
+    payload.update({
+        'state': 1,
         'default': True,
-        'inform_url': config.get('gateway', 'url'),
-        'mac': mac,
-        'ip': ip_addr,
-        'model': config.get('gateway', 'device'),
-        'model_display': config.get('gateway', 'device_display'),
-        'version': config.get('gateway', 'firmware'),
-        'uptime': uptime(),
+        'adopted': False,
+        'cfgversion': '?',
+        'x_authkey': MASTER_KEY,
+        '_default_key': True,
     })
+    return json.dumps(payload)
 
 
-def _create_complete_inform(config, dc):
-    ports = ast.literal_eval(config.get('gateway', 'ports'))
+def _port_idx(port):
+    return int(port['ifname'].replace('eth', '')) + 1
+
+
+def _uxg_fields(dc, ports):
+    """Fields a UXG reports on top of the USG-style tables."""
+    port_table, assignments = [], []
+    for port in ports:
+        stats = dc.data.get('ifstat', {}).get(port['ifname'], {})
+        idx = _port_idx(port)
+        group = port['type'].upper()
+        port_table.append({
+            'port_idx': idx,
+            'name': port['ifname'],
+            'ifname': port['ifname'],
+            'networkgroup': group,
+            'network_name': group,
+            'type': 'wire',
+            'mac': dc.data.get('macs', {}).get(port['ifname'], ''),
+            'up': stats.get('up', True),
+            'enable': True,
+            'speed': stats.get('speed', 1000),
+            'full_duplex': stats.get('full_duplex', True),
+            'rx_bytes': stats.get('rx_bytes', 0),
+            'tx_bytes': stats.get('tx_bytes', 0),
+            'rx_packets': stats.get('rx_packets', 0),
+            'tx_packets': stats.get('tx_packets', 0),
+            'rx_rate': stats.get('rx_bps', 0) * 8,
+            'tx_rate': stats.get('tx_bps', 0) * 8,
+        })
+        if port['type'].lower() == 'lan':
+            # UXG clients are what the LAN port learned: the controller
+            # ignores network_table[].host_table for UniFi OS gateways and
+            # reads the mac_table of `up` ports in the network's group.
+            # Entries without `vlan` count as the untagged LAN (VLAN 1).
+            port_table[-1]['mac_table'] = dc.data.get('host_table', [])
+        assignments.append({
+            'ifname': port['ifname'],
+            'port_idx': idx,
+            'networkgroup': group,
+            'role': port['type'].lower(),
+            'enable': True,
+        })
+    return {
+        'type': 'uxg',
+        'adopted': True,
+        'num_port': len(ports),
+        'port_table': port_table,
+        'ethernet_overrides': assignments,
+        'config_port_table': assignments,
+        'udapi_version': {'version': 48},
+        'udapi_caps': 0,
+        'gw_caps': {},
+        'time_ms': int(time.time() * 1000),
+    }
+
+
+def _complete_payload(config, dc, device):
+    ports = dc.ports
     lan_if = [d['ifname'] for d in ports if d['type'].lower() == 'lan'][0]
     wan_if = [d['ifname'] for d in ports if d['type'].lower() == 'wan'][0]
     mac, ip_addr, ip_info = _resolve_lan_identity(config, dc, lan_if)
     netmask = ip_info.get('netmask', '255.255.255.0')
 
-    hostname = get_hostname()
-    if config.has_option('gateway', 'hostname'):
-        hostname = config.get('gateway', 'hostname')
+    hostname = config.get('gateway', 'hostname', fallback='') or \
+        dc.data.get('hostname') or 'OPNsense'
+    uptime = dc.uptime()
 
     system_stats = dc.data.get('system_stats', {'cpu': '0', 'mem': '0'})
 
@@ -199,22 +264,23 @@ def _create_complete_inform(config, dc):
         'has_vti': True,
         'hostname': hostname,
         'inform_url': config.get('gateway', 'url'),
+        'inform_ip': _inform_ip(config.get('gateway', 'url')),
         'ip': ip_addr,
         'ipv4_active_leases': active_leases,
         'isolated': False,
         'locating': config.getboolean('gateway', 'locating') if config.has_option('gateway', 'locating') else False,
         'mac': mac,
-        'model': config.get('gateway', 'device'),
-        'model_display': config.get('gateway', 'device_display'),
+        'model': device.model,
+        'model_display': device.display,
         'netmask': netmask,
         'radius_caps': 1,
         'required_version': '4.0.0',
         'selfrun_beacon': True,
-        'serial': mac.replace(':', ''),
-        'version': config.get('gateway', 'firmware'),
+        'serial': mac.replace(':', '').upper(),
+        'version': device.firmware(),
         'time': int(time.time()),
         'uplink': wan_if,
-        'uptime': uptime(),
+        'uptime': uptime,
         'pfor-stats': [],
         'speedtest-status': {
             'latency': int(speedtest.get('ping', 0)),
@@ -231,14 +297,26 @@ def _create_complete_inform(config, dc):
         'system-stats': {
             'cpu': system_stats.get('cpu', '0'),
             'mem': system_stats.get('mem', '0'),
-            'uptime': str(uptime()),
+            'uptime': str(uptime),
         },
         'routes': _build_routes(dc, wan_if, lan_if),
         'network_table': get_network_table(dc.data, ports),
-        'if_table': get_if_table(dc.data, ports),
+        'if_table': get_if_table(dc.data, ports, uptime),
     }
+    payload.update(_uxg_fields(dc, ports))
+    for network in payload['network_table']:
+        port = [p for p in ports if p['ifname'] == network['name']][0]
+        network.update({
+            'ifname': port['ifname'],
+            'networkgroup': port['type'].upper(),
+            'port_idx': _port_idx(port),
+        })
 
-    return json.dumps(payload)
+    return payload
+
+
+def _create_complete_inform(config, dc, device):
+    return json.dumps(_complete_payload(config, dc, device))
 
 
 def _build_routes(dc, wan_if, lan_if):
@@ -254,38 +332,37 @@ def _build_routes(dc, wan_if, lan_if):
     if lan_ip.get('address') and lan_ip.get('netmask'):
         routes.append({
             'nh': [{'intf': lan_if, 't': 'C>*'}],
-            'pfx': '%s/%s' % (lan_ip['address'], netmask_to_cidr(lan_ip['netmask'])),
+            'pfx': str(ipaddress.ip_network(
+                '%s/%s' % (lan_ip['address'], lan_ip['netmask']), strict=False)),
         })
 
     return routes
 
 
-def create_inform(config, dc):
+def create_inform(config, dc, device):
     if not config.getboolean('gateway', 'is_adopted'):
-        return _create_partial_inform(config, dc)
-    return _create_complete_inform(config, dc)
+        return _create_partial_inform(config, dc, device)
+    return _create_complete_inform(config, dc, device)
 
 
-def create_broadcast_message(config, index, version=2, command=6):
+def create_broadcast_message(config, index, device, uptime=0, version=2, command=6):
     lan_mac = config.get('gateway', 'lan_mac')
     lan_ip = config.get('gateway', 'lan_ip')
-    firmware = config.get('gateway', 'firmware')
-    device = config.get('gateway', 'device')
+    firmware = device.firmware()
+    model = device.model
 
     platform_name = 'UNIFI-GW'
-    if config.has_option('gateway', 'platform'):
-        platform_name = config.get('gateway', 'platform')
 
     tlv = UnifiTLV()
     tlv.add(1, bytearray(mac_string_2_array(lan_mac)))
     tlv.add(2, bytearray(mac_string_2_array(lan_mac) + ip_string_2_array(lan_ip)))
-    tlv.add(3, '{}.v{}'.format(device, firmware).encode('ascii'))
-    tlv.add(10, pack('!I', uptime()))
+    tlv.add(3, '{}.v{}'.format(model, firmware).encode('ascii'))
+    tlv.add(10, pack('!I', uptime))
     tlv.add(11, platform_name.encode('ascii'))
-    tlv.add(12, device.encode('ascii'))
+    tlv.add(12, model.encode('ascii'))
     tlv.add(19, bytearray(mac_string_2_array(lan_mac)))
     tlv.add(18, pack('!I', index))
-    tlv.add(21, device.encode('ascii'))
+    tlv.add(21, model.encode('ascii'))
     tlv.add(27, firmware.encode('ascii'))
     tlv.add(22, firmware.encode('ascii'))
     return tlv.get(version=version, command=command)

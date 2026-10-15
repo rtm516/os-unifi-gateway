@@ -1,0 +1,16 @@
+<acl>
+    <page-services-unifigateway>
+        <name>Services: UniFi Gateway</name>
+        <patterns>
+            <pattern>ui/unifigateway/*</pattern>
+            <pattern>api/unifigateway/*</pattern>
+        </patterns>
+    </page-services-unifigateway>
+    <page-services-unifigateway-log>
+        <name>Services: UniFi Gateway: Log File</name>
+        <patterns>
+            <pattern>ui/diagnostics/log/core/unifigateway/*</pattern>
+            <pattern>api/diagnostics/log/core/unifigateway/*</pattern>
+        </patterns>
+    </page-services-unifigateway-log>
+</acl>

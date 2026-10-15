@@ -4,60 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Python 3 daemon that emulates a Ubiquiti UniFi Gateway (UGW3) to a UniFi Controller. It allows non-Ubiquiti routers (OpenWRT, OPNSense, pfSense, etc.) to report network stats to the UniFi Controller UI.
+An OPNsense plugin (`os-unifi-gateway`) whose Python daemon makes OPNsense appear to a UniFi Network controller as a UniFi gateway, speaking the UniFi "inform" protocol. OPNsense is the only supported router. Docker runs the same daemon off-box against the OPNsense REST API, for testing.
 
-Inspired by [stephanlascar/unifi-gateway](https://github.com/stephanlascar/unifi-gateway) and [qvr/unifi-gateway](https://github.com/qvr/unifi-gateway).
+Forked from [amd989/unifi-gateway](https://github.com/amd989/unifi-gateway), itself based on [stephanlascar/unifi-gateway](https://github.com/stephanlascar/unifi-gateway) and [qvr/unifi-gateway](https://github.com/qvr/unifi-gateway).
 
 ## Running
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt pytest jinja2
+python -m pytest                                  # pycryptodome AES backend
+UNIFI_GW_AES_BACKEND=openssl python -m pytest     # ctypes/libcrypto backend (what OPNsense uses)
 
-# First-time adoption to controller
-python unifi_gateway.py set-adopt -s http://your.controller/inform
-
-# Run in foreground (for development/debugging)
-python unifi_gateway.py run
-
-# Run as background daemon (Linux only)
-python unifi_gateway.py start
-
-# Stop / restart daemon
-python unifi_gateway.py stop
-python unifi_gateway.py restart
-
-# Docker
+# Off-box against a router's API (config is created on first start)
+OPNSENSE_HOST=192.168.1.1 OPNSENSE_API_KEY_FILE=apikey.txt \
+UNIFI_ADOPT_URL=http://controller:8080/inform python unifi_gateway.py run
+python unifi_gateway.py dump      # print the inform payload once
+python unifi_gateway.py status    # adoption state as JSON
 docker compose up -d
 ```
 
 ## Architecture
 
-The codebase uses psutil for cross-platform data collection (Linux + FreeBSD). Tests live in `tests/` using pytest.
+- `unifi_gateway.py`: entry point. Adoption (keeps informing until the controller adopts), inform loop, controller responses (`noop`, `setparam`, `cmd`, `upgrade`, `setdefault`), config persistence. Config values from defaults, env overrides (`ENV_OVERRIDES`) and the router-discovered identity are "runtime" values that `_save_config` keeps out of the file unless the daemon changes them.
+- `unifi_protocol.py`: TNBU packets (AES-CBC before adoption / GCM after, zlib or snappy) and JSON payloads. The pre-adoption inform is the full payload flagged `state: 1, default: true, adopted: false` with `x_authkey`; the controller needs `inform_ip` as an IP address, not a hostname. UXG payloads add `type`, `port_table`, `ethernet_overrides`, `udapi_version` and similar fields.
+- `devices.py`: the emulated model, a UniFi Gateway Lite (`UXG`, eth0=LAN/eth1=WAN), and its latest-firmware lookup from fw-update.ubnt.com, unless `firmware` is pinned. The controller ignores model codes it doesn't know, and the USG (UGW3) was dropped because Ubiquiti ends its support after Network 10.6.
+- `aes.py`: AES via pycryptodome, falling back to OpenSSL libcrypto through ctypes (OPNsense ships no Python AES library).
+- `collectors/opnsense.py`: `OPNsenseCollector` turns router state into payload data. Interfaces are required; everything else is optional and degrades gracefully (forbidden calls back off for 10 minutes). WAN/LAN are matched by interface description, then identifier, then device. Their speed, duplex and link come from the NICs underneath (`physical_ports`): bridge members, lagg ports, a VLAN's parent, a PPP link's ports (`Source.ppps`, or guessed from the one unused unassigned NIC when the API can't say), fastest up port wins.
+- `collectors/source.py`: `Source` interface. Each method returns data shaped like the matching OPNsense API response. `SourceError.hint` says how to fix access problems.
+  - `api_source.py`: `APISource`, the REST API with a key (Docker/testing). `opnsense_api.py` is its stdlib HTTP client.
+  - `local_source.py`: `LocalSource`, on the router: `configctl` actions, `/conf/config.xml`, `/tmp/<if>_nameserver` (used by the plugin; `UNIFI_GW_SOURCE=local`).
+- `tools.py`: builds `if_table` / `network_table`. `tlv.py`: discovery broadcast TLVs. `daemon.py`: double-fork daemon.
 
-**Core modules:**
+**Plugin (`plugin/`):** laid out like opnsense/plugins. MVC model/controllers/view under `src/opnsense/mvc`, configd actions, an rc.conf.d template that passes settings to the daemon as env vars, the `unifi_gateway` rc.d script (daemon(8) with syslog tag `unifi-gateway`) and a syslog filter. `build-pkg.sh` bundles the Python sources into `/usr/local/opnsense/scripts/unifigateway/`. `build-repo.sh` makes the pkg repository. Both need FreeBSD's `pkg`; `Dockerfile.pkg` builds it for Linux. The daemon keeps its state in `/var/db/unifi-gateway/unifi-gateway.conf`.
 
-- `unifi_gateway.py` — Entry point and main loop. Subclasses `Daemon`, handles the inform loop (periodic POSTs to the controller), processes controller responses (`noop`, `setparam`, `reboot`, `cmd`, `upgrade`, `setdefault`). Manages adoption workflow and config persistence. Supports graceful shutdown via SIGTERM/SIGINT. Configurable via environment variables.
-- `unifi_protocol.py` — Implements the UniFi inform binary protocol. Handles AES-CBC and AES-GCM encryption/decryption, zlib/snappy compression, and builds the JSON inform payload (partial for unadopted, complete for adopted devices). Uses `MASTER_KEY` for unadopted communication, then switches to device-specific authkey after adoption.
-- `collectors/` — Platform-aware data collection package with class hierarchy:
-  - `base.py` — `BaseCollector`: cross-platform logic via psutil (interface stats, IPs, MACs, CPU/mem, DHCP lease parsing for dnsmasq/ISC/KEA formats, DNS nameservers, latency, speedtest). Subclasses override `_get_default_gateway()` and `_get_neighbors_raw()`.
-  - `linux.py` — `LinuxCollector`: `/proc/net/dev` multicast, `/sys/class/net/` MAC fallback, `/proc/net/route` gateway, `ip neigh` neighbor table.
-  - `freebsd.py` — `FreeBSDCollector`: `netstat -rn` gateway, `arp -an` neighbor table.
-  - `opnsense.py` — `OPNSenseCollector(FreeBSDCollector)`: OPNSense REST API integration (ARP, Netflow, config push).
-  - `openwrt.py` — `OpenWRTCollector(LinuxCollector)`: ubus/LuCI RPC integration (leases, host hints, conntrack).
-  - `pfsense.py` — `PfSenseCollector(FreeBSDCollector)`: pfSense API integration.
-  - `__init__.py` — `create_collector(config)` factory with auto-detection (`platform = auto | linux | opnsense | openwrt | pfsense | freebsd`).
-- `datacollector.py` — Backward-compatibility shim, delegates to `collectors.create_collector()`.
-- `tools.py` — Helper functions for building `if_table` and `network_table` structures that the controller expects, plus conversion utilities (MAC/IP string-to-array, netmask-to-CIDR, uptime via psutil).
-- `tlv.py` — TLV (Type-Length-Value) encoding for UDP broadcast discovery messages.
-- `daemon.py` — Generic Unix daemon class (double-fork, PID file management).
+**Release:** a `v*` tag builds the plugin pkg, attaches it to the GitHub release, publishes the repository to the `pkg-repo` branch (served from raw.githubusercontent.com) and pushes the Docker image to GHCR.
 
-**Config:** `conf/unifi-gateway.conf` — INI format with `[global]`, `[gateway]`, and `[provisioned]` sections. The `ports` field maps emulated UniFi interface names (`eth0`/`eth1`/`eth2`) to real system interfaces via `realif`. Config is modified at runtime by controller responses and saved back. Optional keys: `hostname`, `dhcp_lease_file`, `dhcp_lease_format`, `ping_target`, `speedtest_file`, `platform`.
-
-**Environment variables:** `UNIFI_GW_CONFIG` (config path), `UNIFI_GW_LOG_LEVEL` (DEBUG/INFO/WARNING/ERROR), `UNIFI_GW_LOG_FILE` (log to file).
-
-**Key protocol detail:** The inform packet format is `TNBU` magic + version + MAC + flags + IV + payload version + payload length + encrypted/compressed JSON payload. Flags indicate encryption type (CBC vs GCM) and compression (zlib vs snappy).
-
-**Packaging:** Most platforms (Debian, RHEL, FreeBSD) ship a PyInstaller binary. OpenWRT packages (`pkg/openwrt/`) ship pure Python source instead, depending on `python3`, `python3-psutil`, and `python3-pycryptodome` from the OpenWRT feeds. This keeps `.ipk`/`.apk` packages tiny for flash-constrained devices. A wrapper at `/usr/bin/unifi-gateway` invokes the Python source at `/usr/lib/unifi-gateway/`. Both `opkg` (pre-25.12) and `apk` (25.12+) formats are built.
-
-**Unhandled command log:** `conf/unhandled_commands.json` records controller operations we don't act on (unknown response types, commands, setparam keys, mgmt_cfg keys). This serves as a living TODO for missing features.
+**Unhandled command log:** `unhandled_commands.json` (next to the config) records controller operations we don't act on. Treat it as a living TODO.

@@ -1,0 +1,33 @@
+<model>
+    <mount>//OPNsense/unifigateway</mount>
+    <version>0.1.0</version>
+    <description>UniFi Gateway</description>
+    <items>
+        <general>
+            <enabled type="BooleanField">
+                <Default>0</Default>
+                <Required>Y</Required>
+            </enabled>
+            <inform_url type="UrlField">
+                <Required>N</Required>
+                <ValidationMessage>Enter the controller's inform URL, e.g. http://unifi.example.net:8080/inform</ValidationMessage>
+            </inform_url>
+            <wan_interface type="InterfaceField">
+                <Default>wan</Default>
+                <Required>Y</Required>
+            </wan_interface>
+            <lan_interface type="InterfaceField">
+                <Default>lan</Default>
+                <Required>Y</Required>
+            </lan_interface>
+            <firmware type="TextField">
+                <Required>N</Required>
+                <Mask>/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/</Mask>
+                <ValidationMessage>Use the four-part form a device reports, e.g. 5.1.26.33914, or leave empty for the latest release.</ValidationMessage>
+            </firmware>
+            <hostname type="HostnameField">
+                <Required>N</Required>
+            </hostname>
+        </general>
+    </items>
+</model>

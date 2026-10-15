@@ -1,61 +1,31 @@
 # -*- coding: utf-8 -*-
-"""Platform-aware data collector hierarchy.
+"""OPNsense data collection.
 
 Usage:
     from collectors import create_collector
-    dc = create_collector(config)
+    dc = create_collector(config, device)
 """
-import logging
-import os
-import platform
+from .opnsense import OPNsenseCollector
+from .source import SourceError
 
-logger = logging.getLogger('unifi-gateway')
-
-
-def create_collector(config):
-    """Create the appropriate collector for the configured/detected platform."""
-    platform_name = 'auto'
-    if config.has_option('gateway', 'platform'):
-        platform_name = config.get('gateway', 'platform').lower().strip()
-
-    if platform_name == 'auto':
-        platform_name = _detect_platform()
-
-    logger.info('Using platform collector: %s', platform_name)
-
-    if platform_name == 'opnsense':
-        from .opnsense import OPNSenseCollector
-        return OPNSenseCollector(config)
-    if platform_name == 'openwrt':
-        from .openwrt import OpenWRTCollector
-        return OpenWRTCollector(config)
-    if platform_name == 'pfsense':
-        from .pfsense import PfSenseCollector
-        return PfSenseCollector(config)
-    if platform_name == 'linux':
-        from .linux import LinuxCollector
-        return LinuxCollector(config)
-    if platform_name in ('freebsd', 'openbsd', 'netbsd', 'darwin'):
-        from .freebsd import FreeBSDCollector
-        return FreeBSDCollector(config)
-
-    logger.warning('Unknown platform %r, falling back to base collector', platform_name)
-    from .base import BaseCollector
-    return BaseCollector(config)
+__all__ = ['OPNsenseCollector', 'SourceError', 'create_collector', 'create_source']
 
 
-def _detect_platform():
-    system = platform.system().lower()
-    if system == 'linux':
-        if os.path.exists('/etc/openwrt_release'):
-            return 'openwrt'
-        return 'linux'
-    if system == 'freebsd':
-        if os.path.exists('/usr/local/opnsense'):
-            return 'opnsense'
-        if os.path.exists('/etc/platform'):
-            return 'pfsense'
-        return 'freebsd'
-    if system in ('openbsd', 'netbsd', 'darwin'):
-        return 'freebsd'
-    return system
+def create_source(config):
+    """[opnsense] source = api (default, works off-box) or local (on the
+    router itself, as the OPNsense plugin runs)."""
+    kind = config.get('opnsense', 'source', fallback='api').strip().lower()
+    if kind == 'local':
+        from .local_source import LocalSource
+        return LocalSource()
+    if kind != 'api':
+        raise ValueError('Unknown [opnsense] source %r: use api or local' % kind)
+    from .api_source import create_api_source
+    return create_api_source(config)
+
+
+def create_collector(config, device):
+    return OPNsenseCollector(
+        config, create_source(config),
+        wan_port=device.wan_port, lan_port=device.lan_port,
+    )

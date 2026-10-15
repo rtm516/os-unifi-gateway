@@ -1,0 +1,76 @@
+#!/bin/sh
+
+# PROVIDE: unifi_gateway
+# REQUIRE: NETWORKING configd
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="unifi_gateway"
+rcvar="unifi_gateway_enable"
+
+load_rc_config $name
+
+: ${unifi_gateway_enable:="NO"}
+: ${unifi_gateway_dir:="/var/db/unifi-gateway"}
+: ${unifi_gateway_env:=""}
+
+pidfile="/var/run/${name}.pid"
+python="/usr/local/bin/python3"
+script="/usr/local/opnsense/scripts/unifigateway/unifi_gateway.py"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+status_cmd="${name}_status"
+
+unifi_gateway_running()
+{
+    [ -f "${pidfile}" ] && kill -0 "$(cat "${pidfile}")" 2>/dev/null
+}
+
+unifi_gateway_start()
+{
+    if unifi_gateway_running; then
+        echo "${name} is already running as pid $(cat "${pidfile}")."
+        return 0
+    fi
+    echo "Starting ${name}."
+    install -d -m 700 "${unifi_gateway_dir}"
+    # daemon(8) restarts the gateway if it exits and sends its output to
+    # syslog, where the plugin's log page picks it up
+    env ${unifi_gateway_env} \
+        UNIFI_GW_CONFIG="${unifi_gateway_dir}/unifi-gateway.conf" \
+        UNIFI_GW_LOG_LEVEL=INFO \
+        /usr/sbin/daemon -f -r -R 30 -P "${pidfile}" -T unifi-gateway \
+        "${python}" "${script}" run
+}
+
+unifi_gateway_stop()
+{
+    if ! unifi_gateway_running; then
+        echo "${name} is not running."
+        rm -f "${pidfile}"
+        return 0
+    fi
+    echo "Stopping ${name}."
+    pid=$(cat "${pidfile}")
+    kill -TERM "${pid}"
+    i=0
+    while kill -0 "${pid}" 2>/dev/null && [ "${i}" -lt 20 ]; do
+        sleep 0.5
+        i=$((i + 1))
+    done
+    rm -f "${pidfile}"
+}
+
+unifi_gateway_status()
+{
+    if unifi_gateway_running; then
+        echo "${name} is running as pid $(cat "${pidfile}")."
+    else
+        echo "${name} is not running."
+        return 1
+    fi
+}
+
+run_rc_command "$1"

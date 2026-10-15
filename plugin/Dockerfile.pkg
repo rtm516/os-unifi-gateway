@@ -1,0 +1,17 @@
+# FreeBSD's pkg(8), built for Linux, so the plugin package and its repository
+# can be produced without a FreeBSD machine:
+#
+#   docker build -t unifi-gateway-pkg -f plugin/Dockerfile.pkg plugin
+#   docker run --rm -v "$PWD:/src" -w /src unifi-gateway-pkg \
+#       sh plugin/build-pkg.sh 0.1.0 dist
+FROM debian:bookworm-slim
+
+ARG PKG_VERSION=2.1.2
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git ca-certificates pkg-config m4 \
+        libarchive-dev libbz2-dev liblzma-dev libzstd-dev zlib1g-dev libssl-dev libbsd-dev \
+    && git clone --depth 1 --branch "${PKG_VERSION}" https://github.com/freebsd/pkg.git /tmp/pkg \
+    && cd /tmp/pkg && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install \
+    && ldconfig && rm -rf /tmp/pkg /var/lib/apt/lists/* \
+    && pkg --version
