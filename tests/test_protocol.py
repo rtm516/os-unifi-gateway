@@ -65,6 +65,8 @@ def test_uxg_fields(gateway_config, collector, device):
     roles = {p['ifname']: p['role'] for p in payload['ethernet_overrides']}
     assert roles == {'eth0': 'wan', 'eth1': 'lan'}
     assert [p['port_idx'] for p in payload['port_table']] == [1, 2]
+    # live updates: the controller only offers them to usg2_caps bit 16
+    assert payload['usg2_caps'] & 16 and payload['inform_min_interval'] == 2
 
 
 def test_sys_stats(gateway_config, collector, device):

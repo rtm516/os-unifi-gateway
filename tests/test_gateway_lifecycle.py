@@ -252,6 +252,17 @@ class TestSpeedTest:
             gw.interval = 1
             assert gw._inform_delay() == 1
 
+    def test_live_updates_while_the_ui_is_open(self, tmp_path, _mock_daemon):
+        conf = tmp_path / 'unifi-gateway.conf'
+        conf.write_text('')
+        gw = _gateway(_mock_daemon, conf)
+        gw._handle_response({'_type': 'noop', 'interval': 10, 'live_update': True})
+        assert gw._inform_delay() == _mock_daemon.LIVE_INFORM_INTERVAL
+        gw._handle_response({'_type': 'noop', 'interval': 10, 'live_update': False})
+        assert gw._inform_delay() == 10
+        gw._handle_response({'_type': 'noop', 'interval': 10})
+        assert gw._inform_delay() == 10
+
 
 class TestAdoptedModel:
     """Gateways adopted as a UXG Lite by older versions stay Lites in the

@@ -54,7 +54,7 @@ Earlier versions appeared as a UniFi Gateway Lite, on which the controller won't
 | WAN/LAN addresses, MACs, link state, MTU, speed | interface status |
 | Traffic counters and rates | interface statistics |
 | WAN gateway, latency, uptime and downtime | routing table and gateway monitoring (dpinger) |
-| ISP name and logo | the WAN address's provider, looked up at [ipinfo.io](https://ipinfo.io) |
+| ISP name and logo | the WAN address's provider, from [Team Cymru](https://www.team-cymru.com/ip-asn-mapping)'s IP-to-ASN DNS service |
 | WAN DNS servers | Unbound's upstream servers, otherwise the WAN link's DNS servers |
 | Clients, hostnames, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
 | Hostname, uptime, CPU, memory, load average | system information |

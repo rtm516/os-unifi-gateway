@@ -19,7 +19,7 @@ from devices import Device
 from isp import IspInfo
 from speedtest import SpeedTest
 from unifi_protocol import (
-    create_broadcast_message, create_inform, encode_inform, decode_inform,
+    LIVE_INFORM_INTERVAL, create_broadcast_message, create_inform, encode_inform, decode_inform,
 )
 
 logger = logging.getLogger('unifi-gateway')
@@ -138,6 +138,7 @@ class UnifiGateway(Daemon):
 
     def __init__(self, **kwargs):
         self.interval = 10
+        self.live = False
         self.running = True
         self.config = configparser.RawConfigParser()
         self.config.read(CONFIG_FILE)
@@ -356,6 +357,8 @@ class UnifiGateway(Daemon):
     def _inform_delay(self):
         if self.speedtest.active:
             return min(self.interval, SPEEDTEST_INFORM_INTERVAL)
+        if self.live:
+            return min(self.interval, LIVE_INFORM_INTERVAL)
         return self.interval
 
     def _create_inform(self):
@@ -374,6 +377,12 @@ class UnifiGateway(Daemon):
 
         if resp_type == 'noop':
             self.interval = response.get('interval', self.interval)
+            # someone has the controller's UI open: inform often enough
+            # for its live traffic and client views
+            live = bool(response.get('live_update'))
+            if live != self.live:
+                logger.debug('Live updates %s', 'on' if live else 'off')
+            self.live = live
 
         elif resp_type == 'setparam':
             HANDLED_SETPARAM_KEYS = {

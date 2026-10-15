@@ -28,6 +28,11 @@ logger = logging.getLogger('unifi-gateway')
 MASTER_KEY = "ba86f2bbe107c7c57eb5f2690775c712"
 BLOCK_SIZE = 16
 
+# usg2_caps bit 16 asks the controller for live updates: while someone has its
+# UI open, its noop replies carry `live_update` and we inform this often
+USG2_LIVE_UPDATE = 16
+LIVE_INFORM_INTERVAL = 2
+
 
 def encode_inform(config, data, encryption='CBC'):
     iv = os.urandom(16)
@@ -245,6 +250,8 @@ def _uxg_fields(dc, ports, uptime=0):
         'config_port_table': assignments,
         'udapi_version': {'version': 48},
         'udapi_caps': 0,
+        'usg2_caps': USG2_LIVE_UPDATE,
+        'inform_min_interval': LIVE_INFORM_INTERVAL,
         'gw_caps': {},
         'time_ms': int(time.time() * 1000),
     }

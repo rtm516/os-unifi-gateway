@@ -1,52 +1,102 @@
 # -*- coding: utf-8 -*-
 """ISP lookup for the controller's ISP display. No real network."""
-import io
-import json
-import urllib.error
 from unittest.mock import patch
+
+import dns.resolver
 
 import pytest
 
 import isp
 from isp import IspInfo, lookup
 
-IPINFO = {'ip': '81.2.3.4', 'city': 'Exampleton', 'region': 'England', 'country': 'GB',
-          'loc': '51.0000,-1.0000', 'org': 'AS64500 Example Broadband', 'timezone': 'Europe/London'}
+RECORDS = {
+    ('4.3.2.81.origin.asn.cymru.com', 'TXT'): [
+        '64500 | 81.0.0.0/8 | GB | ripencc | 2004-01-01',
+        '64501 | 81.2.0.0/16 | GB | ripencc | 2006-09-08',  # more specific
+    ],
+    ('AS64501.asn.cymru.com', 'TXT'): [
+        '64501 | GB | ripencc | 1995-06-08 | EXAMPLE-AS - Example Broadband Limited, GB'],
+    ('myip.opendns.com', 'A'): ['81.2.3.4'],
+}
 
 
-def _ipinfo(body, seen):
-    def urlopen(request, timeout=None):
-        seen.append(request.full_url)
-        assert request.get_header('User-agent') == 'unifi-gateway'
-        return io.BytesIO(json.dumps(body).encode())
-    return urlopen
+def fake_dns(seen):
+    def query(name, rtype, server=None):
+        seen.append((name, server))
+        return RECORDS.get((name, rtype), [])
+    return query
 
 
 class TestLookup:
 
     def test_looks_up_the_wan_address(self):
         seen = []
-        with patch('isp.urllib.request.urlopen', _ipinfo(IPINFO, seen)):
+        with patch('isp.query', fake_dns(seen)):
             info = lookup('81.2.3.4')
-        assert seen == ['https://ipinfo.io/81.2.3.4/json']
         assert info == {
-            'isp_name': 'Example Broadband', 'isp_organization': 'Example Broadband',
-            'asn': 64500, 'address': '81.2.3.4', 'city': 'Exampleton',
-            'country_code': 'GB', 'timezone': 'Europe/London',
+            'isp_name': 'Example Broadband Limited', 'isp_organization': 'Example Broadband Limited',
+            'asn': 64501, 'address': '81.2.3.4', 'country_code': 'GB',
         }
+        assert [name for name, _ in seen] == ['4.3.2.81.origin.asn.cymru.com', 'AS64501.asn.cymru.com']
 
     @pytest.mark.parametrize('wan_ip', ['100.64.1.2', '192.168.1.2', None, 'not-an-ip'])
     def test_private_wan_uses_own_public_address(self, wan_ip):
         """Behind CGNAT or another router the WAN address says nothing."""
         seen = []
-        with patch('isp.urllib.request.urlopen', _ipinfo(IPINFO, seen)):
-            assert lookup(wan_ip)['isp_name'] == 'Example Broadband'
-        assert seen == ['https://ipinfo.io/json']
+        with patch('isp.query', fake_dns(seen)):
+            assert lookup(wan_ip)['address'] == '81.2.3.4'
+        assert seen[0] == ('myip.opendns.com', isp.OPENDNS)
+
+    def test_ipv6_origin_name(self):
+        name = isp._origin_name(isp.ipaddress.ip_address('2001:db8::1'))
+        assert name == '1.0.0.0.' + '0.0.0.0.' * 5 + '8.b.d.0.1.0.0.2.origin6.asn.cymru.com'
+
+    @pytest.mark.parametrize('description,name', [
+        ('BT-UK-AS - British Telecommunications Limited, GB', 'British Telecommunications Limited'),
+        ('unspecified - Vodafone Limited, GB', 'Vodafone Limited'),
+        ('CLOUDFLARENET - Cloudflare, Inc., US', 'Cloudflare, Inc.'),
+        ('EXAMPLE', 'EXAMPLE'),
+    ])
+    def test_provider_name(self, description, name):
+        assert isp._provider_name(description, description[-2:]) == name
 
     def test_no_provider(self):
-        with patch('isp.urllib.request.urlopen', _ipinfo({'ip': '81.2.3.4', 'bogon': True}, [])):
+        with patch('isp.query', lambda *a, **k: []):
             with pytest.raises(ValueError):
                 lookup('81.2.3.4')
+
+
+class TestQuery:
+
+    def _answer(self, *records):
+        class Record:
+            def __init__(self, strings):
+                self.strings = strings
+
+            def to_text(self):
+                return self.strings[0].decode()
+        return [Record(r) for r in records]
+
+    def test_txt_strings_are_joined(self):
+        answer = self._answer([b'64500 | GB', b' | xy'])
+        with patch('isp.dns.resolver.Resolver.resolve', return_value=answer) as resolve:
+            assert isp.query('AS64500.asn.cymru.com', 'TXT') == ['64500 | GB | xy']
+        assert resolve.call_args.args[:2] == ('AS64500.asn.cymru.com', 'TXT')
+
+    def test_asks_a_given_server(self):
+        seen = []
+
+        def resolve(resolver, name, rtype, lifetime=None):
+            seen.append(resolver.nameservers)
+            return self._answer([b'81.2.3.4'])
+        with patch('isp.dns.resolver.Resolver.resolve', resolve):
+            assert isp.query('myip.opendns.com', 'A', server=isp.OPENDNS) == ['81.2.3.4']
+        assert seen == [[isp.OPENDNS]]
+
+    @pytest.mark.parametrize('error', [dns.resolver.NXDOMAIN, dns.resolver.NoAnswer])
+    def test_no_such_record(self, error):
+        with patch('isp.dns.resolver.Resolver.resolve', side_effect=error):
+            assert isp.query('nothing.example', 'TXT') == []
 
 
 class TestIspInfo:
@@ -87,7 +137,7 @@ class TestIspInfo:
         assert len(calls) == 2
 
     def test_failure_keeps_last_answer_and_retries_later(self):
-        answers = [{'isp_name': 'Example Broadband', 'asn': 64500}, urllib.error.URLError('offline')]
+        answers = [{'isp_name': 'Example Broadband', 'asn': 64500}, OSError('offline')]
 
         def fetch(ip):
             answer = answers.pop(0)
