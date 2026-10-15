@@ -287,7 +287,6 @@ def _complete_payload(config, dc, device):
         'has_eth1': True,
         'has_porta': True,
         'has_ssh_disable': True,
-        'has_vti': True,
         'hostname': hostname,
         'inform_url': config.get('gateway', 'url'),
         'inform_ip': _inform_ip(config.get('gateway', 'url')),
