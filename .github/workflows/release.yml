@@ -99,9 +99,10 @@ jobs:
 
   # ── pkg(8) repository on the pkg-repo branch ───────────────────────
   #
-  # OPNsense can use the branch as a package repository:
+  # GitHub Pages serves the branch (Settings > Pages: deploy from branch
+  # pkg-repo, folder /), and OPNsense adds it as a package repository:
   #   fetch -o /usr/local/etc/pkg/repos/unifi-gateway.conf \
-  #     https://raw.githubusercontent.com/<owner>/<repo>/pkg-repo/unifi-gateway.conf
+  #     https://<owner>.github.io/<repo>/unifi-gateway.conf
 
   publish-repo:
     needs: [plugin]
@@ -145,8 +146,10 @@ jobs:
           cp plugin/build-repo.sh /tmp/build-repo.sh
           docker run --rm -v "$PWD/repo:/repo" -v /tmp/build-repo.sh:/build-repo.sh \
             unifi-gateway-pkg sh /build-repo.sh /repo \
-            "https://raw.githubusercontent.com/${{ github.repository }}/pkg-repo"
+            "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
           sudo chown -R "$(id -u):$(id -g)" repo
+          # serve the files as they are, without a Jekyll build
+          touch repo/.nojekyll
           cat > repo/README.md <<EOF
           # unifi-gateway pkg repository
 

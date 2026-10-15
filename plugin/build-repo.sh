@@ -14,7 +14,7 @@ REPO_URL="${2:?Usage: build-repo.sh <repo-dir> <repo-url>}"
 pkg repo "$REPO_DIR"
 
 # pkg links the catalogues under their legacy names; a static web host
-# (such as raw.githubusercontent.com) serves links as text, so copy them
+# (such as GitHub Pages) serves links as text, so copy them
 for link in "$REPO_DIR"/*; do
     if [ -L "$link" ]; then
         target="$(readlink -f "$link")"

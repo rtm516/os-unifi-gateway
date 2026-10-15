@@ -18,16 +18,16 @@ This project started as a fork of [amd989/unifi-gateway](https://github.com/amd9
 
 ## Installation
 
-The plugin is published as a pkg repository on this repository's [`pkg-repo`](https://github.com/rtm516/unifi-gateway/tree/pkg-repo) branch. On the OPNsense shell (**System > Console** or SSH):
+The plugin is published as a pkg repository on [GitHub Pages](https://rtm516.github.io/os-unifi-gateway/). On the OPNsense shell (**System > Console** or SSH):
 
 ```sh
 fetch -o /usr/local/etc/pkg/repos/unifi-gateway.conf \
-  https://raw.githubusercontent.com/rtm516/unifi-gateway/pkg-repo/unifi-gateway.conf
+  https://rtm516.github.io/os-unifi-gateway/unifi-gateway.conf
 pkg update
 pkg install os-unifi-gateway
 ```
 
-After that the plugin shows up under **System > Firmware > Plugins** like any other, and updates arrive with normal OPNsense updates. Each release's package is also attached to its [GitHub release](https://github.com/rtm516/unifi-gateway/releases) (`pkg add os-unifi-gateway-<version>.pkg`).
+After that the plugin shows up under **System > Firmware > Plugins** like any other, and updates arrive with normal OPNsense updates. Each release's package is also attached to its [GitHub release](https://github.com/rtm516/os-unifi-gateway/releases) (`pkg add os-unifi-gateway-<version>.pkg`).
 
 To remove it: `pkg delete os-unifi-gateway`, then delete `/usr/local/etc/pkg/repos/unifi-gateway.conf`.
 
@@ -182,7 +182,7 @@ docker build -t unifi-gateway-pkg -f plugin/Dockerfile.pkg plugin
 docker run --rm -v "$PWD:/src" -w /src unifi-gateway-pkg sh plugin/build-pkg.sh 0.1.0 dist
 ```
 
-Pushing a `v*` tag builds the plugin package, attaches it to a GitHub release, publishes it to the `pkg-repo` branch and pushes the Docker image to GHCR.
+Pushing a `v*` tag builds the plugin package, attaches it to a GitHub release, publishes it to the `pkg-repo` branch (served by GitHub Pages) and pushes the Docker image to GHCR.
 
 ## License
 
