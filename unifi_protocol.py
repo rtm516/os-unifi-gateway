@@ -32,6 +32,8 @@ BLOCK_SIZE = 16
 # UI open, its noop replies carry `live_update` and we inform this often
 USG2_LIVE_UPDATE = 16
 LIVE_INFORM_INTERVAL = 2
+# usg2_caps bit 1 enables the client Ping Test (see pingtest.py)
+USG2_PING_TEST = 1
 
 
 def encode_inform(config, data, encryption='CBC'):
@@ -251,7 +253,7 @@ def _uxg_fields(dc, ports, uptime=0):
         'config_port_table': assignments,
         'udapi_version': {'version': 48},
         'udapi_caps': 0,
-        'usg2_caps': USG2_LIVE_UPDATE,
+        'usg2_caps': USG2_LIVE_UPDATE | USG2_PING_TEST,
         'inform_min_interval': LIVE_INFORM_INTERVAL,
         'gw_caps': {},
         'time_ms': int(time.time() * 1000),
@@ -391,6 +393,15 @@ def create_inform(config, dc, device):
     if not config.getboolean('gateway', 'is_adopted'):
         return _create_partial_inform(config, dc, device)
     return _create_complete_inform(config, dc, device)
+
+
+def create_event_inform(config, dc, device, event):
+    """An inform carrying an event (`event_string` plus its fields), as a
+    UXG sends one: the controller handles the event and skips the usual
+    stats for that inform."""
+    payload = _complete_payload(config, dc, device)
+    payload.update(inform_as_notif=True, notif_reason='event', notif_payload=event)
+    return json.dumps(payload)
 
 
 def create_broadcast_message(config, index, device, uptime=0, version=2, command=6):

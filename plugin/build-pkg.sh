@@ -30,7 +30,7 @@ cp -R "$PLUGIN_DIR/src/." "$STAGE$PREFIX/"
 chmod 755 "$STAGE$PREFIX/etc/rc.d/unifi_gateway"
 
 mkdir -p "$STAGE$APP_DIR/collectors"
-for f in unifi_gateway.py unifi_protocol.py aes.py devices.py isp.py speedtest.py tools.py tlv.py; do
+for f in unifi_gateway.py unifi_protocol.py aes.py devices.py isp.py pingtest.py speedtest.py tools.py tlv.py; do
     cp "$ROOT_DIR/$f" "$STAGE$APP_DIR/"
 done
 cp "$ROOT_DIR"/collectors/*.py "$STAGE$APP_DIR/collectors/"

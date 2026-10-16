@@ -16,9 +16,11 @@ import requests
 from collectors import SourceError, create_collector
 from devices import Device
 from isp import IspInfo
+from pingtest import EVENT as PINGTEST_EVENT, PingTests
 from speedtest import SpeedTest
 from unifi_protocol import (
-    LIVE_INFORM_INTERVAL, create_broadcast_message, create_inform, encode_inform, decode_inform,
+    LIVE_INFORM_INTERVAL, create_broadcast_message, create_event_inform, create_inform,
+    encode_inform, decode_inform,
 )
 
 logger = logging.getLogger('unifi-gateway')
@@ -86,13 +88,14 @@ ENV_OVERRIDES = {
 }
 
 
+# Inform this often while a speed or ping test runs, so the controller can
+# show its progress live instead of one update per normal interval. The ping
+# test also times out unless it hears about it within 5 s.
+TEST_INFORM_INTERVAL = 2
+
 # setparam keys kept out of the config file. system_cfg is the full UDAPI
 # configuration a UXG would apply (including the controller's site token and
 # RADIUS secrets); nothing here uses it.
-# Inform this often while a speed test runs, so the controller can show its
-# progress live instead of one update per normal interval.
-SPEEDTEST_INFORM_INTERVAL = 2
-
 NOT_PERSISTED_SETPARAM_KEYS = {'_type', 'server_time_in_utc', 'blocked_sta', 'system_cfg'}
 
 
@@ -161,6 +164,7 @@ class UnifiGateway:
             'gateway', 'speedtest_file',
             fallback=os.path.join(os.path.dirname(CONFIG_FILE), 'speedtest.json')))
         self.isp = IspInfo()
+        self.pingtest = PingTests()
         self.datacollector = None
         self._unhandled = {}
         self._adopt_logged = False
@@ -176,6 +180,7 @@ class UnifiGateway:
         """Initialize data collector and unhandled log. Called at run() time
         so that stop/restart commands don't need the router to be reachable."""
         self.datacollector = create_collector(self.config, self.device)
+        self.pingtest.source = self.datacollector.source
         self._set_runtime('gateway', 'lan_mac', self.datacollector.lan_mac)
         self._set_runtime('gateway', 'lan_ip', self.datacollector.lan_ip)
         logger.info(
@@ -302,6 +307,7 @@ class UnifiGateway:
                     'Received %s from controller', response.get('_type', 'unknown')
                 )
                 self._handle_response(response)
+                self._report_ping_tests()
             except Exception as e:
                 logger.error('Error in inform loop: %s', e, exc_info=True)
                 self.interval = min(self.interval * 2, 60)
@@ -350,8 +356,8 @@ class UnifiGateway:
             )
 
     def _inform_delay(self):
-        if self.speedtest.active:
-            return min(self.interval, SPEEDTEST_INFORM_INTERVAL)
+        if self.speedtest.active or self.pingtest.active:
+            return min(self.interval, TEST_INFORM_INTERVAL)
         if self.live:
             return min(self.interval, LIVE_INFORM_INTERVAL)
         return self.interval
@@ -362,6 +368,16 @@ class UnifiGateway:
         data['isp'] = self.isp.current(
             data.get('ip', {}).get(self.device.wan_port, {}).get('address'))
         return create_inform(self.config, self.datacollector, self.device)
+
+    def _report_ping_tests(self):
+        """Ping test progress only reaches the controller as an event."""
+        reports = self.pingtest.reports()
+        if not reports:
+            return
+        response = self._send_inform(create_event_inform(
+            self.config, self.datacollector, self.device,
+            {'event_string': PINGTEST_EVENT, 'pingtest-status': reports}))
+        self._handle_response(response)
 
     def _handle_signal(self, signum, frame):
         logger.info('Received signal %d, shutting down', signum)
@@ -463,6 +479,12 @@ class UnifiGateway:
         if cmd == 'speed-test':
             self.speedtest.start(down_duration=response.get('down_duration'),
                                  up_duration=response.get('up_duration'))
+        elif cmd == 'ping-test-start':
+            self.pingtest.start(response.get('destination'), count=response.get('count'),
+                                interval=response.get('interval'),
+                                packet_size=response.get('packetSize'))
+        elif cmd == 'ping-test-stop':
+            self.pingtest.stop(response.get('destination'))
         elif cmd == 'set-locate':
             self.config.set('gateway', 'locating', 'True')
             logger.info('Locate mode enabled')

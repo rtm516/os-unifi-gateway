@@ -10,17 +10,25 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, wait
 
-from .source import Source, SourceError
+from .source import PingJob, Source, SourceError
 
 CONFIGCTL = '/usr/local/sbin/configctl'
+PING = '/sbin/ping'
 CONFIG_XML = '/conf/config.xml'
 SYSCTL = '/sbin/sysctl'
 VERSION_CMD = '/usr/local/sbin/opnsense-version'
 IFCTL_DIR = '/tmp'
+
+# FreeBSD ping's reply and summary lines (hlim for IPv6)
+PING_REPLY = re.compile(r'icmp_seq=(\d+) (?:ttl|hlim)=(\d+) time=([\d.]+) ms')
+PING_SUMMARY = re.compile(r'(\d+) packets transmitted')
+# A packet still unanswered after this long counts as lost until it's answered
+PING_WAIT = 1.0
 
 LEASE_ACTIONS = {
     'dnsmasq': ('dnsmasq', 'list', 'leases'),
@@ -306,3 +314,65 @@ class LocalSource(Source):
             'netflow', 'aggregate', 'top', 'FlowSourceAddrTotals', str(int(since)),
             str(int(until)), 'src_addr', 'octets',
             'if=%s,direction=%s' % (device, direction), '1000')
+
+    def ping(self, destination, count, interval, packet_size):
+        return LocalPing(destination, count, interval, packet_size)
+
+
+class LocalPing(PingJob):
+    """/sbin/ping in the background, its output read as it comes."""
+
+    def __init__(self, destination, count, interval, packet_size):
+        self.count = count
+        self.interval = interval
+        args = [PING, '-n', '-c', str(count), '-i', str(interval), '-s', str(packet_size),
+                destination]
+        try:
+            self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         stdin=subprocess.DEVNULL, text=True)
+        except OSError as e:
+            raise SourceError(PING, None, str(e)) from None
+        self.started = time.monotonic()
+        self._lines = []
+        self._lock = threading.Lock()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+        self.transmitted = None   # from ping's summary
+        self.last_line = ''
+
+    def _read(self):
+        for line in self.proc.stdout:
+            with self._lock:
+                self._lines.append(line.strip())
+
+    def poll(self):
+        done = not self._reader.is_alive()
+        with self._lock:
+            lines, self._lines = self._lines, []
+        replies = []
+        for line in lines:
+            if line:
+                self.last_line = line
+            match = PING_REPLY.search(line)
+            if match:
+                replies.append({'id': int(match.group(1)), 'ttl': int(match.group(2)),
+                                'time': float(match.group(3))})
+            match = PING_SUMMARY.match(line)
+            if match:
+                self.transmitted = int(match.group(1))
+        if done and self.transmitted is None:
+            # it never got going: unknown host, no route, bad arguments
+            raise SourceError(PING, self.proc.wait(), self.last_line or 'no output')
+        if self.transmitted is not None:
+            return self.transmitted, replies, done
+        waited = time.monotonic() - self.started - PING_WAIT
+        sent = int(waited // self.interval) + 1 if waited >= 0 else 0
+        return min(sent, self.count), replies, done
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()

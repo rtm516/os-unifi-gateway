@@ -109,3 +109,21 @@ class Source:
         """Network Insight FlowSourceAddrTotals rows {src_addr, total} for
         complete buckets in [since, until) on `device` in `direction`."""
         raise NotImplementedError
+
+    def ping(self, destination, count, interval, packet_size):
+        """Start pinging `destination` `count` times, `interval` seconds
+        apart, and return a PingJob."""
+        raise NotImplementedError
+
+
+class PingJob:
+    """A ping started by Source.ping."""
+
+    def poll(self):
+        """(packets sent so far, new replies as [{id, time (ms), ttl}] with
+        id the 0-based sequence number, whether the ping is over)."""
+        raise NotImplementedError
+
+    def stop(self):
+        """Stop the ping and clean up; safe to call when it's over."""
+        raise NotImplementedError

@@ -4,12 +4,14 @@
 Each call needs a privilege on the API key's user; when one is missing the
 SourceError carries the privilege name as its hint.
 """
+import json
 import urllib.parse
 
 from .opnsense_api import OPNsenseAPI, OPNsenseAPIError, read_api_key_file
-from .source import Source
+from .source import PingJob, Source, SourceError
 
 DASHBOARD = 'Lobby: Dashboard'
+PING = 'Diagnostics: Ping'
 LIST_ALL = {'current': 1, 'rowCount': -1}
 
 LEASE_ENDPOINTS = {
@@ -139,3 +141,85 @@ class APISource(Source):
                 '%d/%d/src_addr/octets/1000?filter_field=if,direction'
                 '&filter_value=%s,%s' % (since, until, device, direction))
         return _rows(self._get(path, 'Diagnostics: Network Insight'))
+
+    def ping(self, destination, count, interval, packet_size):
+        return APIPing(self, destination, count, interval, packet_size)
+
+
+class APIPing(PingJob):
+    """A Diagnostics > Ping job. The API only reports running totals (sent,
+    received, average), so each new reply's time is worked out from how the
+    average moved, and its sequence number from the packets lost so far."""
+
+    def __init__(self, source, destination, count, interval, packet_size):
+        self.source = source
+        self.count = count
+        settings = {
+            'hostname': destination,
+            'fam': 'ip6' if ':' in destination else 'ip',
+            'packetsize': str(packet_size),
+            'interval': str(interval),
+            'description': 'UniFi ping test',
+        }
+        result = source._get('/api/diagnostics/ping/set', PING, {'ping': {'settings': settings}})
+        self.job = result.get('uuid') if isinstance(result, dict) else None
+        if not self.job:
+            raise SourceError('/api/diagnostics/ping/set', None,
+                              json.dumps(result.get('validations', result)
+                                         if isinstance(result, dict) else result))
+        started = source._get('/api/diagnostics/ping/start/' + self.job, PING, {})
+        if not isinstance(started, dict) or started.get('status') != 'ok':
+            try:
+                self.stop()
+            except SourceError:
+                pass
+            raise SourceError('/api/diagnostics/ping/start', None,
+                              (started or {}).get('status_msg', 'not started'))
+        self.received = 0
+        self.total = 0.0     # sum of reply times so far
+        self.next_id = 0
+        self.lost = 0
+        self.assigned = set()
+        self.late_polls = 0
+
+    def _reply_id(self, sent):
+        if self.next_id < sent:
+            reply_id = self.next_id
+            self.next_id += 1
+        else:
+            # a packet taken for lost was answered after all
+            reply_id = max(i for i in range(sent) if i not in self.assigned)
+        self.assigned.add(reply_id)
+        return reply_id
+
+    def poll(self):
+        rows = _rows(self.source._get('/api/diagnostics/ping/search_jobs', PING, LIST_ALL))
+        row = next((r for r in rows if r.get('id') == self.job), None)
+        if row is None:
+            raise SourceError('/api/diagnostics/ping/search_jobs', None, 'ping job gone')
+        # the job pings until stopped, so anything past `count` is ignored
+        sent = min(int(row.get('send') or 0), self.count)
+        received = min(int(row.get('received') or 0), sent)
+        # packets unanswered besides the one in flight take the next
+        # sequence numbers (a late reply fills one of them in again)
+        lost = max(sent - received - 1, 0)
+        self.next_id += max(lost - self.lost, 0)
+        self.lost = max(lost, self.lost)
+        replies = []
+        if received > self.received:
+            # ping prints the average to the microsecond
+            total = float(row.get('avg') or 0) * received
+            each = max(total - self.total, 0.0) / (received - self.received)
+            for _ in range(received - self.received):
+                replies.append({'id': self._reply_id(sent), 'time': round(each, 3), 'ttl': 64})
+            self.received, self.total = received, total
+        if sent >= self.count:
+            # give the last reply a moment; the totals lag a poll behind
+            self.late_polls += 1
+        done = (sent >= self.count and (received >= sent or self.late_polls > 2)) or \
+            (row.get('status') != 'running' and sent > 0)
+        return sent, replies, done
+
+    def stop(self):
+        for action in ('stop', 'remove'):
+            self.source._get('/api/diagnostics/ping/%s/%s' % (action, self.job), PING, {})

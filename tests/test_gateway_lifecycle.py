@@ -283,7 +283,7 @@ class TestSpeedTest:
         gw = _gateway(gateway_module, conf)
         assert gw._inform_delay() == 10
         with patch.object(type(gw.speedtest), 'active', new=True):
-            assert gw._inform_delay() == gateway_module.SPEEDTEST_INFORM_INTERVAL
+            assert gw._inform_delay() == gateway_module.TEST_INFORM_INTERVAL
             gw.interval = 1
             assert gw._inform_delay() == 1
 
