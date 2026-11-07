@@ -93,6 +93,10 @@ ENV_OVERRIDES = {
 # test also times out unless it hears about it within 5 s.
 TEST_INFORM_INTERVAL = 2
 
+# Consecutive HTTP 400s from the controller, while adopted, after which it is
+# taken to have forgotten this gateway (see _handle_response)
+REJECTIONS_BEFORE_RESET = 3
+
 # setparam keys kept out of the config file. system_cfg is the full UDAPI
 # configuration a UXG would apply (including the controller's site token and
 # RADIUS secrets); nothing here uses it.
@@ -168,6 +172,7 @@ class UnifiGateway:
         self.datacollector = None
         self._unhandled = {}
         self._adopt_logged = False
+        self._rejections = 0
 
     def _set_runtime(self, section, option, value):
         key = (section, option)
@@ -181,8 +186,7 @@ class UnifiGateway:
         so that stop/restart commands don't need the router to be reachable."""
         self.datacollector = create_collector(self.config, self.device)
         self.pingtest.source = self.datacollector.source
-        self._set_runtime('gateway', 'lan_mac', self.datacollector.lan_mac)
-        self._set_runtime('gateway', 'lan_ip', self.datacollector.lan_ip)
+        self._set_identity()
         logger.info(
             'Connected to OPNsense %s: LAN %s (%s), WAN %s',
             self.datacollector.data.get('hostname', ''),
@@ -271,8 +275,17 @@ class UnifiGateway:
         if not self._wait_for_collector():
             return
 
-        # Until adopted, keep informing the controller (so clicking Adopt in
-        # its UI completes without a restart) or broadcast for discovery
+        while self.running:
+            if not self._adopt():
+                return
+            self._inform_loop()
+
+        logger.info('Shutting down gracefully')
+
+    def _adopt(self):
+        """Until adopted, keep informing the controller (so clicking Adopt in
+        its UI completes without a restart) or broadcast for discovery.
+        False when that can't work."""
         broadcast_index = 1
         while self.running and not self.config.getboolean('gateway', 'is_adopted'):
             if self._adopt_url():
@@ -284,24 +297,28 @@ class UnifiGateway:
                     'Not adopted and TLV broadcasting disabled: set '
                     'UNIFI_ADOPT_URL or run set-adopt first'
                 )
-                return
+                return False
             else:
                 self._send_broadcast(broadcast_index)
                 broadcast_index += 1
             self._sleep(self.interval)
             try:
-                self.datacollector.update()
+                self._update_collector()
             except SourceError as e:
                 logger.warning('Failed to refresh data from OPNsense: %s', e)
+        return True
 
+    def _inform_loop(self):
+        """Inform the controller until stopped, or until it no longer knows
+        this gateway (see _handle_response)."""
         logger.info(
             'Device adopted, starting inform loop (interval=%ds)', self.interval
         )
         self._check_adopted_model()
 
-        while self.running:
+        while self.running and self.config.getboolean('gateway', 'is_adopted'):
             try:
-                self.datacollector.update()
+                self._update_collector()
                 response = self._send_inform(self._create_inform())
                 logger.debug(
                     'Received %s from controller', response.get('_type', 'unknown')
@@ -313,7 +330,14 @@ class UnifiGateway:
                 self.interval = min(self.interval * 2, 60)
             self._sleep(self._inform_delay())
 
-        logger.info('Shutting down gracefully')
+    def _update_collector(self):
+        self.datacollector.update()
+        self._set_identity()
+
+    def _set_identity(self):
+        """The LAN interface's MAC and address identify the gateway."""
+        self._set_runtime('gateway', 'lan_mac', self.datacollector.lan_mac)
+        self._set_runtime('gateway', 'lan_ip', self.datacollector.lan_ip)
 
     def status(self):
         """Adoption state from the config file; never contacts anything."""
@@ -394,8 +418,19 @@ class UnifiGateway:
                 break
             time.sleep(min(remaining, 0.5))
 
+    def _reset_adoption(self):
+        self.config.set('gateway', 'is_adopted', 'False')
+        self.config.remove_option('gateway', 'key')
+        self.config.remove_option('gateway', 'adopted_model')
+        self.config.set('gateway', 'use_aes_gcm', 'False')
+        self._save_config()
+        self._adopt_logged = False
+        self._rejections = 0
+
     def _handle_response(self, response):
         resp_type = response.get('_type', '')
+        if resp_type not in ('httperror', 'urlerror'):
+            self._rejections = 0
 
         if resp_type == 'noop':
             self.interval = response.get('interval', self.interval)
@@ -448,12 +483,22 @@ class UnifiGateway:
 
         elif resp_type == 'setdefault':
             logger.critical('Controller requested device reset')
-            self.config.set('gateway', 'is_adopted', 'False')
-            self.config.remove_option('gateway', 'key')
-            self.config.remove_option('gateway', 'adopted_model')
-            self.config.set('gateway', 'use_aes_gcm', 'False')
-            self._save_config()
+            self._reset_adoption()
             self.running = False
+
+        elif resp_type == 'httperror' and response.get('code') == '400' and \
+                self.config.getboolean('gateway', 'is_adopted'):
+            # The controller no longer knows this gateway (it was forgotten).
+            # It only sends setdefault to devices it knows, so go back to
+            # informing as a factory-default gateway, which shows up for
+            # adoption again.
+            self._rejections += 1
+            logger.warning('Controller rejected the inform (HTTP 400), %d of %d',
+                           self._rejections, REJECTIONS_BEFORE_RESET)
+            if self._rejections >= REJECTIONS_BEFORE_RESET:
+                logger.error('The controller no longer knows this gateway: resetting '
+                             'adoption, adopt it again in the UniFi controller')
+                self._reset_adoption()
 
         elif resp_type == 'httperror':
             logger.warning(

@@ -299,6 +299,79 @@ class TestSpeedTest:
         assert gw._inform_delay() == 10
 
 
+class TestForgotten:
+    """A controller that has forgotten the gateway answers its informs with
+    HTTP 400 and never sends setdefault, so the gateway resets its adoption
+    itself."""
+
+    REJECTED = {'_type': 'httperror', 'code': '400', 'msg': 'Bad Request'}
+
+    def _adopted(self, module, tmp_path):
+        conf = tmp_path / 'unifi-gateway.conf'
+        conf.write_text('[gateway]\nis_adopted = True\nkey = 00112233445566778899aabbccddeeff\n'
+                        'use_aes_gcm = True\nadopted_model = UXGPRO\n'
+                        'url = http://192.0.2.10:8080/inform\n')
+        return conf, _gateway(module, conf)
+
+    def test_repeated_rejections_reset_adoption(self, tmp_path, gateway_module):
+        conf, gw = self._adopted(gateway_module, tmp_path)
+        with patch.object(gateway_module, 'CONFIG_FILE', str(conf)):
+            for _ in range(gateway_module.REJECTIONS_BEFORE_RESET - 1):
+                gw._handle_response(self.REJECTED)
+            assert gw.config.getboolean('gateway', 'is_adopted')
+            gw._handle_response(self.REJECTED)
+        saved = _read(conf)
+        assert saved.get('gateway', 'is_adopted') == 'False'
+        assert not saved.has_option('gateway', 'key')
+        assert not saved.has_option('gateway', 'adopted_model')
+        assert saved.get('gateway', 'url') == 'http://192.0.2.10:8080/inform'
+        assert gw.running  # back to adoption, not exiting
+
+    def test_an_accepted_inform_resets_the_count(self, tmp_path, gateway_module):
+        conf, gw = self._adopted(gateway_module, tmp_path)
+        for _ in range(gateway_module.REJECTIONS_BEFORE_RESET - 1):
+            gw._handle_response(self.REJECTED)
+        gw._handle_response({'_type': 'noop', 'interval': 10})
+        gw._handle_response(self.REJECTED)
+        assert gw.config.getboolean('gateway', 'is_adopted')
+
+    def test_other_errors_leave_adoption(self, tmp_path, gateway_module):
+        conf, gw = self._adopted(gateway_module, tmp_path)
+        for _ in range(5):
+            gw._handle_response({'_type': 'httperror', 'code': '502', 'msg': 'Bad Gateway'})
+            gw._handle_response({'_type': 'urlerror', 'msg': 'refused'})
+        assert gw.config.getboolean('gateway', 'is_adopted')
+
+    def test_run_goes_back_to_adoption(self, tmp_path, gateway_module):
+        conf, gw = self._adopted(gateway_module, tmp_path)
+        gw.datacollector = _collector(gw)
+        sent = []
+
+        def send(payload):
+            adopted = gw.config.getboolean('gateway', 'is_adopted')
+            sent.append(adopted)
+            if not adopted:
+                gw.running = False  # the factory-default inform went out
+                return {'_type': 'httperror', 'code': '404', 'msg': 'Not Found'}
+            return self.REJECTED
+        with patch.object(gateway_module, 'CONFIG_FILE', str(conf)), \
+             patch.object(gw, '_wait_for_collector', return_value=True), \
+             patch.object(gw, '_create_inform', return_value='{}'), \
+             patch.object(gw, '_send_inform', side_effect=send), \
+             patch.object(gw, '_sleep'):
+            gw.run()
+        assert sent == [True] * gateway_module.REJECTIONS_BEFORE_RESET + [False]
+
+    def test_identity_follows_the_lan_interface(self, tmp_path, gateway_module):
+        conf, gw = self._adopted(gateway_module, tmp_path)
+        gw.datacollector = _collector(gw)
+        gw._update_collector()
+        assert gw.config.get('gateway', 'lan_mac') == '00:00:5e:00:53:01'
+        with patch.object(type(gw.datacollector), 'lan_mac', new='00:00:5e:00:53:99'):
+            gw._update_collector()
+        assert gw.config.get('gateway', 'lan_mac') == '00:00:5e:00:53:99'
+
+
 class TestAdoptedModel:
     """Gateways adopted as a UXG Lite by older versions stay Lites in the
     controller until they're forgotten and adopted again."""
