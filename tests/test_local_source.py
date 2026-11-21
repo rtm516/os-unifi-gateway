@@ -54,6 +54,21 @@ IFCONFIG = {
     'lo0': {'flags': ['up', 'loopback']},
 }
 
+# pfctl -vvs state: a client's connection out and the WAN side of its NAT,
+# then an IPv6 one
+PF_STATES = """all tcp 93.184.215.14:443 <- 192.168.48.2:50000       ESTABLISHED:ESTABLISHED
+   [1000 + 65535](+2000) wscale 7  [3000 + 65535](+4000) wscale 7
+   age 00:01:02, expires in 23:59:58, 10:12 pkts, 1000:20000 bytes, rule 87
+   id: 6735d27500004aa7 creatorid: 5a3b8c1c
+all tcp 81.2.3.4:61000 (192.168.48.2:50000) -> 93.184.215.14:443       ESTABLISHED:ESTABLISHED
+   [3000 + 65535](+4000) wscale 7  [1000 + 65535](+2000) wscale 7
+   age 00:01:02, expires in 23:59:58, 10:12 pkts, 1000:20000 bytes, rule 12, allow-opts
+   id: 6735d27500004aa8 creatorid: 5a3b8c1c
+all udp 2001:db8::1[53] <- 2001:db8::2[5353]       MULTIPLE:SINGLE
+   age 00:00:01, expires in 00:00:59, 1:1 pkts, 70:140 bytes, rule 5
+   id: 6735d27500004aa9 creatorid: 5a3b8c1c
+"""
+
 STATS = {
     'pppoe0': {'bytes received': '1000', 'bytes transmitted': '2000'},
     'bridge0': {'bytes received': '3000', 'bytes transmitted': '4000'},
@@ -109,6 +124,8 @@ class FakeRunner:
             return 'OPNsense 25.7.5\n'
         if args[0].endswith('sysctl'):
             return self.cp_times.pop(0) + '\n'
+        if args[0].endswith('pfctl'):
+            return PF_STATES
         raise AssertionError(args)
 
 
@@ -257,6 +274,18 @@ def test_dhcp_subnets_from_config(local, tmp_path):
     # ISC ranges of enabled interfaces only (an empty <enable/> counts)
     assert local.dhcp_subnets('isc') == [{'subnet': '', 'pools': '192.168.48.100-192.168.48.150'},
                                          {'subnet': '', 'pools': '10.1.0.2-10.1.0.9'}]
+
+
+def test_states_from_pfctl(local):
+    assert local.states() == [
+        {'direction': 'in', 'src_addr': '192.168.48.2', 'dst_addr': '93.184.215.14',
+         'bytes': [1000, 20000], 'pkts': [10, 12], 'id': '6735d27500004aa7/5a3b8c1c'},
+        {'direction': 'out', 'src_addr': '81.2.3.4', 'dst_addr': '93.184.215.14',
+         'bytes': [1000, 20000], 'pkts': [10, 12], 'id': '6735d27500004aa8/5a3b8c1c'},
+        {'direction': 'in', 'src_addr': '2001:db8::2', 'dst_addr': '2001:db8::1',
+         'bytes': [70, 140], 'pkts': [1, 1], 'id': '6735d27500004aa9/5a3b8c1c'},
+    ]
+    assert local.runner.calls[-1] == ['/sbin/pfctl', '-vvs', 'state']
 
 
 def test_reverse_dns_skips_unresolved(local):

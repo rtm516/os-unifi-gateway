@@ -105,6 +105,13 @@ class Source:
         """Unbound infrastructure cache rows: {ip, host, ...}."""
         raise NotImplementedError
 
+    def states(self):
+        """Firewall states as rows of /api/diagnostics/firewall/query_states:
+        {id, direction: 'in'|'out', src_addr, dst_addr, bytes: [from src,
+        from dst], pkts: [from src, from dst]}. src is the side that opened
+        the connection."""
+        raise NotImplementedError
+
     def ping(self, destination, count, interval, packet_size):
         """Start pinging `destination` `count` times, `interval` seconds
         apart, and return a PingJob."""

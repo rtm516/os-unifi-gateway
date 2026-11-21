@@ -22,6 +22,7 @@ PING = '/sbin/ping'
 CONFIG_XML = '/conf/config.xml'
 SYSCTL = '/sbin/sysctl'
 VERSION_CMD = '/usr/local/sbin/opnsense-version'
+PFCTL = '/sbin/pfctl'
 IFCTL_DIR = '/tmp'
 
 # FreeBSD ping's reply and summary lines (hlim for IPv6)
@@ -44,6 +45,40 @@ def format_uptime(seconds):
     if days:
         return '%d %s, %s' % (days, 'days' if days > 1 else 'day', clock)
     return clock
+
+
+def _state_address(text):
+    """The address of pfctl's 'a.b.c.d:port' or 'v6addr[port]'."""
+    if text.count(':') > 1:
+        return text.split('[')[0]
+    return text.split(':')[0]
+
+
+def parse_states(output):
+    """`pfctl -vvs state` as query_states rows (see Source.states), parsed
+    the way OPNsense's filter/lib/states.py does: 'in' states print as
+    `dst <- src`, 'out' states as `src -> dst`, either address possibly
+    followed by its NAT address in brackets."""
+    rows, record = [], None
+    for line in output.splitlines():
+        parts = line.split()
+        if not line.startswith(' ') and len(parts) >= 6:
+            out = parts[-3] == '->'
+            first, last = _state_address(parts[2]), _state_address(parts[-2])
+            record = {'direction': 'out' if out else 'in',
+                      'src_addr': first if out else last,
+                      'dst_addr': last if out else first,
+                      'bytes': [0, 0], 'pkts': [0, 0]}
+        elif record is not None and parts and parts[0] == 'age':
+            for part in line.split(','):
+                words = part.split()
+                if len(words) == 2 and words[1] in ('bytes', 'pkts'):
+                    record[words[1]] = [int(n) for n in words[0].split(':')]
+        elif record is not None and parts and parts[0] == 'id:' and len(parts) >= 4:
+            record['id'] = '%s/%s' % (parts[1], parts[3])
+            rows.append(record)
+            record = None
+    return rows
 
 
 class LocalSource(Source):
@@ -308,6 +343,11 @@ class LocalSource(Source):
 
     def unbound_infra(self):
         return self._action('unbound', 'dumpinfra')
+
+    def states(self):
+        # pfctl directly: configd's `filter list states` takes positional
+        # arguments configctl can't pass empty, and the daemon runs as root
+        return parse_states(self._run([PFCTL, '-vvs', 'state']))
 
     def ping(self, destination, count, interval, packet_size):
         return LocalPing(destination, count, interval, packet_size)

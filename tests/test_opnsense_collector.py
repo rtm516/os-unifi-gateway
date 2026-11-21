@@ -609,14 +609,59 @@ class TestClients:
         assert sorted(calls[0].split('?')[1].split('&')) == [
             'address[]=10.8.1.1', 'address[]=192.168.48.2', 'address[]=192.168.48.9']
 
-    def test_clients_carry_no_traffic_counters(self, gateway_config, fake_api):
-        """The controller takes a UniFi OS gateway's client counters over the
-        APs' and switches', so we send none and theirs stay."""
+    STATES = '/api/diagnostics/firewall/query_states'
+
+    @staticmethod
+    def state(sid, direction, src, dst, from_src, from_dst):
+        return {'id': sid, 'direction': direction, 'src_addr': src, 'dst_addr': dst,
+                'bytes': [from_src, from_dst], 'pkts': [from_src // 100, from_dst // 100]}
+
+    def counters(self, dc):
+        return {h['ip']: (h['tx_bytes'], h['rx_bytes'], h['tx_packets'], h['rx_packets'])
+                for h in dc.data['host_table']}
+
+    def test_client_traffic_from_states(self, gateway_config, fake_api):
+        """A client's own connections count: 'in' states it opened, 'out'
+        states toward it. Each update adds what a state carried since the
+        last; the first only sets the baseline."""
+        states = [
+            self.state('1/a', 'in', '192.168.48.2', '93.184.215.14', 1000, 20000),
+            # the WAN side of the same connection, after NAT
+            self.state('2/a', 'out', '81.2.3.4', '93.184.215.14', 1000, 20000),
+        ]
+        fake_api.responses[self.STATES] = lambda path: {'rows': states}
         dc = make(gateway_config, fake_api)
-        assert dc.data['host_table']
+        assert self.counters(dc)['192.168.48.2'] == (0, 0, 0, 0)
+
+        states[:] = [
+            self.state('1/a', 'in', '192.168.48.2', '93.184.215.14', 1500, 30000),
+            self.state('2/a', 'out', '81.2.3.4', '93.184.215.14', 1500, 30000),
+            # a new connection toward the client, from another VLAN
+            self.state('3/a', 'out', '10.1.0.5', '192.168.48.9', 700, 200),
+            # and its far side, on that VLAN's interface
+            self.state('4/a', 'in', '10.1.0.5', '192.168.48.9', 700, 200),
+            # not a LAN address
+            self.state('5/a', 'in', '10.8.1.1', '93.184.215.14', 900, 900),
+        ]
+        dc.update()
+        counters = self.counters(dc)
+        assert counters['192.168.48.2'] == (500, 10000, 5, 100)
+        assert counters['192.168.48.9'] == (200, 700, 2, 7)
+        assert counters['10.8.1.1'] == (0, 0, 0, 0)
+
+        # a connection that has gone keeps what it carried
+        states[:] = [self.state('3/a', 'out', '10.1.0.5', '192.168.48.9', 1700, 200)]
+        dc.update()
+        counters = self.counters(dc)
+        assert counters['192.168.48.2'] == (500, 10000, 5, 100)
+        assert counters['192.168.48.9'] == (200, 1700, 2, 17)
+
+    def test_no_traffic_counters_without_states(self, gateway_config):
+        api = FakeAPI(forbidden={'/api/diagnostics/firewall/'})
+        dc = make(gateway_config, api)
+        dc.update()
         for host in dc.data['host_table']:
             assert not any(k in host for k in ('rx_bytes', 'tx_bytes', 'rx_packets', 'tx_packets'))
-        assert not [c for c in fake_api.calls if 'networkinsight' in c]
 
 
 class TestLanConfig:

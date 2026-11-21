@@ -136,6 +136,10 @@ class APISource(Source):
     def unbound_infra(self):
         return _rows(self._get('/api/unbound/diagnostics/dumpinfra', 'Services: Unbound'))
 
+    def states(self):
+        return _rows(self._get('/api/diagnostics/firewall/query_states',
+                               'Diagnostics: Show States', {'current': 1, 'rowCount': 100000}))
+
     def ping(self, destination, count, interval, packet_size):
         return APIPing(self, destination, count, interval, packet_size)
 

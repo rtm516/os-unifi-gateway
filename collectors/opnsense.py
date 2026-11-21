@@ -20,6 +20,9 @@ ZERO_MAC = '00:00:00:00:00:00'
 # How long to stop asking for something after access was refused
 FORBIDDEN_BACKOFF = 600
 
+# A client's traffic counters in its mac_table entry, `tx_*` what it sent
+CLIENT_COUNTERS = ('tx_bytes', 'rx_bytes', 'tx_packets', 'rx_packets')
+
 # How long a client's DNS name holds against the other PTR records of its address
 RDNS_HOLD = 900
 
@@ -182,6 +185,8 @@ class OPNsenseCollector:
         self._failed = set()
         self._prev_io = {}
         self._lease_server = None
+        self._state_io = None
+        self._client_io = {}
         self._wan_dns = []
         self._upstream_dns = []
         self._links = {}
@@ -235,6 +240,7 @@ class OPNsenseCollector:
         self.data['nameservers'] = self._upstream_dns or self._wan_dns
         if self._due('host_table', 60):
             self.data['host_table'] = self._build_host_table()
+        self._update_client_traffic()
 
         self.updated['general'] = time.time()
 
@@ -666,12 +672,67 @@ class OPNsenseCollector:
 
     # ── Clients ──────────────────────────────────────────────────────────
 
-    def _build_host_table(self):
-        """LAN clients from the ARP table, merged with DHCP leases.
+    def _update_client_traffic(self):
+        """Give each client its cumulative byte and packet counters, from
+        the firewall states, on every update.
 
-        Without traffic counters: the controller takes a UniFi OS gateway's
-        client counters over what UniFi APs and switches report, so clients
-        keep the APs' and switches' live rates."""
+        A UniFi OS gateway reports them in its LAN port's mac_table (`tx_*`
+        what the client sent), and once one is adopted the controller works
+        out every client's rates from those alone, ignoring what APs and
+        switches report. A client's traffic is what its own connections
+        carry: 'in' states it opened and 'out' states toward it. Its other
+        states (the WAN side of a NAT, the far interface of inter-VLAN
+        traffic) carry the same packets again. Each state adds what it
+        carried since the last update, a new one all of it, except on the
+        first update, which only sets the baseline."""
+        rows = self._call('states')
+        if rows is not None:
+            self._count_states(rows)
+        if self._state_io is None:
+            return
+        for entry in self.data.get('host_table', []):
+            entry.update(self._client_io.get(entry['ip']) or dict.fromkeys(CLIENT_COUNTERS, 0))
+
+    def _count_states(self, rows):
+        lan = self.data.get('ip', {}).get(self.lan_port)
+        try:
+            network = ipaddress.ip_network('%s/%s' % (lan['address'], lan['netmask']), strict=False)
+        except (TypeError, KeyError, ValueError):
+            return
+        first = self._state_io is None
+        seen = {}
+        for row in rows:
+            try:
+                now = tuple(int(n) for n in (list(row['bytes']) + list(row['pkts'])))
+                key = row['id']
+            except (KeyError, TypeError, ValueError):
+                continue
+            seen[key] = now
+            if first or len(now) != 4:
+                continue
+            before = self._state_io.get(key, (0, 0, 0, 0))
+            from_src, from_dst, pkts_src, pkts_dst = (max(0, a - b) for a, b in zip(now, before))
+            if row.get('direction') == 'in':
+                client, sent, received = row.get('src_addr'), (from_src, pkts_src), (from_dst, pkts_dst)
+            elif row.get('direction') == 'out':
+                client, sent, received = row.get('dst_addr'), (from_dst, pkts_dst), (from_src, pkts_src)
+            else:
+                continue
+            try:
+                if ipaddress.ip_address(client) not in network:
+                    continue
+            except ValueError:
+                continue
+            counters = self._client_io.setdefault(client, dict.fromkeys(CLIENT_COUNTERS, 0))
+            counters['tx_bytes'] += sent[0]
+            counters['tx_packets'] += sent[1]
+            counters['rx_bytes'] += received[0]
+            counters['rx_packets'] += received[1]
+        self._state_io = seen
+
+    def _build_host_table(self):
+        """LAN clients from the ARP table, merged with DHCP leases. Their
+        traffic counters are added on every update (_update_client_traffic)."""
         rows = self._call('arp')
         if rows is None:
             # keep what we had rather than dropping every client from the UI
