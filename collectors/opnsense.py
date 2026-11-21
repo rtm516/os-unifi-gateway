@@ -182,8 +182,6 @@ class OPNsenseCollector:
         self._failed = set()
         self._prev_io = {}
         self._lease_server = None
-        self._flow_until = None
-        self._flow_totals = {}
         self._wan_dns = []
         self._upstream_dns = []
         self._links = {}
@@ -236,7 +234,6 @@ class OPNsenseCollector:
             self._upstream_dns = self._get_upstream_dns()
         self.data['nameservers'] = self._upstream_dns or self._wan_dns
         if self._due('host_table', 60):
-            self._update_client_traffic()
             self.data['host_table'] = self._build_host_table()
 
         self.updated['general'] = time.time()
@@ -669,39 +666,12 @@ class OPNsenseCollector:
 
     # ── Clients ──────────────────────────────────────────────────────────
 
-    def _update_client_traffic(self):
-        """Accumulate per-client byte counters from Network Insight.
-
-        The FlowSourceAddrTotals aggregate counts each flow twice: once under
-        its source on the ingress interface (direction 'in') and once under
-        its destination on the egress interface (direction 'out'). On the LAN
-        side those are a client's upload and download. Only complete 5-minute
-        buckets are queried, so nothing is counted twice.
-        """
-        resolution = 300
-        until = int(time.time()) // resolution * resolution
-        since = self._flow_until or until - resolution
-        if until <= since:
-            return
-
-        totals = {}
-        for direction, counter in (('in', 'tx_bytes'), ('out', 'rx_bytes')):
-            rows = self._call('flow_totals', since, until, self.lan_device, direction)
-            if rows is None:
-                return
-            for row in rows:
-                addr = row.get('src_addr')
-                if addr:
-                    totals.setdefault(addr, {})[counter] = int(float(row.get('total') or 0))
-
-        for addr, counts in totals.items():
-            entry = self._flow_totals.setdefault(addr, {'rx_bytes': 0, 'tx_bytes': 0})
-            entry['rx_bytes'] += counts.get('rx_bytes', 0)
-            entry['tx_bytes'] += counts.get('tx_bytes', 0)
-        self._flow_until = until
-
     def _build_host_table(self):
-        """LAN clients from the ARP table, merged with DHCP leases."""
+        """LAN clients from the ARP table, merged with DHCP leases.
+
+        Without traffic counters: the controller takes a UniFi OS gateway's
+        client counters over what UniFi APs and switches report, so clients
+        keep the APs' and switches' live rates."""
         rows = self._call('arp')
         if rows is None:
             # keep what we had rather than dropping every client from the UI
@@ -714,13 +684,10 @@ class OPNsenseCollector:
         lease_names = {}
 
         def add(mac, ip, client_uptime):
-            entry = {
+            hosts[mac] = {
                 'mac': mac, 'ip': ip, 'authorized': True, 'age': 0,
-                'uptime': client_uptime, 'rx_bytes': 0, 'tx_bytes': 0,
-                'rx_packets': 0, 'tx_packets': 0, 'bc_bytes': 0, 'mc_bytes': 0,
+                'uptime': client_uptime,
             }
-            entry.update(self._flow_totals.get(ip, {}))
-            hosts[mac] = entry
 
         for row in rows:
             # the router's own address is a permanent entry, not a client

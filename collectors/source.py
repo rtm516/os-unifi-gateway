@@ -105,11 +105,6 @@ class Source:
         """Unbound infrastructure cache rows: {ip, host, ...}."""
         raise NotImplementedError
 
-    def flow_totals(self, since, until, device, direction):
-        """Network Insight FlowSourceAddrTotals rows {src_addr, total} for
-        complete buckets in [since, until) on `device` in `direction`."""
-        raise NotImplementedError
-
     def ping(self, destination, count, interval, packet_size):
         """Start pinging `destination` `count` times, `interval` seconds
         apart, and return a PingJob."""

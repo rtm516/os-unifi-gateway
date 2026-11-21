@@ -309,12 +309,6 @@ class LocalSource(Source):
     def unbound_infra(self):
         return self._action('unbound', 'dumpinfra')
 
-    def flow_totals(self, since, until, device, direction):
-        return self._action(
-            'netflow', 'aggregate', 'top', 'FlowSourceAddrTotals', str(int(since)),
-            str(int(until)), 'src_addr', 'octets',
-            'if=%s,direction=%s' % (device, direction), '1000')
-
     def ping(self, destination, count, interval, packet_size):
         return LocalPing(destination, count, interval, packet_size)
 

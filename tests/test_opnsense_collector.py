@@ -393,7 +393,7 @@ class TestSystem:
         api = FakeAPI(forbidden={
             '/api/diagnostics/system/', '/api/diagnostics/cpu_usage/stream',
             '/api/routes/gateway/status', '/api/dnsmasq/', '/api/kea/', '/api/dhcpv4/',
-            '/api/diagnostics/interface/search_arp', '/api/diagnostics/networkinsight/',
+            '/api/diagnostics/interface/search_arp',
         })
         dc = make(gateway_config, api)
         assert 'uptime' not in dc.data
@@ -609,36 +609,14 @@ class TestClients:
         assert sorted(calls[0].split('?')[1].split('&')) == [
             'address[]=10.8.1.1', 'address[]=192.168.48.2', 'address[]=192.168.48.9']
 
-    def test_client_traffic_accumulates(self, gateway_config, fake_api):
-        def top(path):
-            if path.endswith('bridge0,in'):
-                return [{'src_addr': '192.168.48.2', 'total': 100.0},
-                        {'src_addr': '', 'total': 100.0}]
-            return [{'src_addr': '192.168.48.2', 'total': 1000}]
-        fake_api.responses['/api/diagnostics/networkinsight/top/'] = top
-
-        with patch('collectors.opnsense.time.time', return_value=3000.0):
-            dc = make(gateway_config, fake_api)
-        host = [h for h in dc.data['host_table'] if h['ip'] == '192.168.48.2'][0]
-        assert (host['tx_bytes'], host['rx_bytes']) == (100, 1000)
-        flow_calls = [c for c in fake_api.calls if 'networkinsight' in c]
-        assert '/FlowSourceAddrTotals/2700/3000/' in flow_calls[0]
-
-        # same 5-minute bucket: nothing new is queried or added
-        dc.updated['host_table'] = 0
-        with patch('collectors.opnsense.time.time', return_value=3200.0):
-            dc.update()
-        assert len([c for c in fake_api.calls if 'networkinsight' in c]) == 2
-
-        # next bucket adds on top
-        dc.updated['host_table'] = 0
-        with patch('collectors.opnsense.time.time', return_value=3301.0):
-            dc.update()
-        host = [h for h in dc.data['host_table'] if h['ip'] == '192.168.48.2'][0]
-        assert (host['tx_bytes'], host['rx_bytes']) == (200, 2000)
-        flow_calls = [c for c in fake_api.calls if 'networkinsight' in c]
-        assert '/FlowSourceAddrTotals/3000/3300/' in flow_calls[-1]
-
+    def test_clients_carry_no_traffic_counters(self, gateway_config, fake_api):
+        """The controller takes a UniFi OS gateway's client counters over the
+        APs' and switches', so we send none and theirs stay."""
+        dc = make(gateway_config, fake_api)
+        assert dc.data['host_table']
+        for host in dc.data['host_table']:
+            assert not any(k in host for k in ('rx_bytes', 'tx_bytes', 'rx_packets', 'tx_packets'))
+        assert not [c for c in fake_api.calls if 'networkinsight' in c]
 
 
 class TestLanConfig:

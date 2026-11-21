@@ -102,8 +102,6 @@ class FakeRunner:
         self.calls.append(args)
         if args[0].endswith('configctl'):
             key = ' '.join(args[1:])
-            if key.startswith('netflow aggregate top'):
-                return json.dumps([{'src_addr': '192.168.48.2', 'total': 512}])
             if key not in self.actions:
                 return 'Action not found\n'
             return json.dumps(self.actions[key])
@@ -259,13 +257,6 @@ def test_dhcp_subnets_from_config(local, tmp_path):
     # ISC ranges of enabled interfaces only (an empty <enable/> counts)
     assert local.dhcp_subnets('isc') == [{'subnet': '', 'pools': '192.168.48.100-192.168.48.150'},
                                          {'subnet': '', 'pools': '10.1.0.2-10.1.0.9'}]
-
-
-def test_flow_totals_passes_filter(local):
-    assert local.flow_totals(2700, 3000, 'bridge0', 'in') == [{'src_addr': '192.168.48.2', 'total': 512}]
-    assert local.runner.calls[-1][1:] == [
-        'netflow', 'aggregate', 'top', 'FlowSourceAddrTotals', '2700', '3000',
-        'src_addr', 'octets', 'if=bridge0,direction=in', '1000']
 
 
 def test_reverse_dns_skips_unresolved(local):

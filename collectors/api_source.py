@@ -136,12 +136,6 @@ class APISource(Source):
     def unbound_infra(self):
         return _rows(self._get('/api/unbound/diagnostics/dumpinfra', 'Services: Unbound'))
 
-    def flow_totals(self, since, until, device, direction):
-        path = ('/api/diagnostics/networkinsight/top/FlowSourceAddrTotals/'
-                '%d/%d/src_addr/octets/1000?filter_field=if,direction'
-                '&filter_value=%s,%s' % (since, until, device, direction))
-        return _rows(self._get(path, 'Diagnostics: Network Insight'))
-
     def ping(self, destination, count, interval, packet_size):
         return APIPing(self, destination, count, interval, packet_size)
 

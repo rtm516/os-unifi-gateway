@@ -56,13 +56,11 @@ Earlier versions appeared as a UniFi Gateway Lite, on which the controller won't
 | WAN gateway, latency, uptime and downtime | routing table and gateway monitoring (dpinger) |
 | ISP name and logo | the WAN address's provider, from [Team Cymru](https://www.team-cymru.com/ip-asn-mapping)'s IP-to-ASN DNS service |
 | WAN DNS servers | Unbound's upstream servers, otherwise the WAN link's DNS servers |
-| Clients, per-client traffic | ARP table, DHCP leases (Dnsmasq or Kea), Network Insight (NetFlow) |
+| Clients | ARP table, DHCP leases (Dnsmasq or Kea) |
 | Client names | the hostname of the client's Kea reservation, else its DHCP lease name without the router's domain, else DNS or ARP |
 | Hostname, uptime, CPU, memory, load average | system information |
 | WAN speed test | measured by the daemon against the nearest fast [speedtest.net](https://www.speedtest.net) server |
 | Client ping test | the firewall pings the client |
-
-Per-client traffic needs **Reporting > NetFlow** capturing the LAN interface.
 
 The speed test (**ISP Speed Test** on the dashboard, or the controller's schedule) needs nothing extra installed, and shows its progress live. It runs where the daemon runs: on the plugin it measures the firewall's WAN link, but in Docker it measures the Docker host's connection, not the router's. It picks the lowest-latency of the nearest speedtest.net servers, then measures each direction for at least 10 seconds over 8 connections, so results should match speedtest.net. The last result is kept in `speedtest.json` next to the config file.
 
@@ -77,7 +75,7 @@ For development and testing, the gateway can also run in Docker, reading from th
    | Status: Interfaces | **required**: interfaces, addresses, counters |
    | Lobby: Dashboard | hostname, version, uptime, CPU, memory, load average |
    | Diagnostics: ARP Table | client list |
-   | Diagnostics: Network Insight | per-client traffic |
+   | Diagnostics: Network Insight | client names from reverse DNS |
    | Services: Dnsmasq DNS/DHCP: Settings *or* Services: DHCP: Kea(v4) | client hostnames from DHCP leases, the LAN's DHCP range at adoption |
    | Services: Unbound | upstream DNS servers |
    | System: Gateways | WAN latency, uptime and downtime |
